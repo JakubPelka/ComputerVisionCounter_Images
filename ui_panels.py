@@ -1,5 +1,5 @@
 # ui_panels.py — layout & panels (English), AOI controls + import/export,
-# Advanced beside Quality slider, dynamic classes grid hook.
+# Advanced beside Quality slider, dynamic classes grid hook. (NO engine/device selectors)
 from __future__ import annotations
 import tkinter as tk
 from tkinter import ttk
@@ -18,14 +18,7 @@ def build_main_ui(app):
     _row_browse(paths, "Output folder (optional):", app.output_dir, app.browse_output, is_dir=True)
     _row_browse(paths, "Weights (.pt / .onnx):", app.weights_path, app.browse_weights, is_dir=False)
 
-    # ========== Engine / Device ==========
-    ed = tk.LabelFrame(root, text="Engine & Device"); ed.pack(fill="x", pady=(0,6))
-    tk.Label(ed, text="Engine:").pack(side="left", padx=(6,2))
-    ttk.Combobox(ed, values=["auto","pt","onnx"], textvariable=app.engine_var,
-                 width=8, state="readonly").pack(side="left")
-    tk.Label(ed, text="Device:").pack(side="left", padx=(12,2))
-    ttk.Combobox(ed, values=["auto","cpu","cuda:0"], textvariable=app.device_var,
-                 width=10, state="readonly").pack(side="left")
+    # (Removed Engine & Device selectors — we always run auto.)
 
     # ========== Quality ==========
     qf = tk.LabelFrame(root, text="Quality (1 = faster • 5 = ultra)"); qf.pack(fill="x", pady=(0,6))
@@ -42,7 +35,6 @@ def build_main_ui(app):
     tk.Checkbutton(aoi, text="Use AOI (draw polygons — finish with Ctrl+Enter, undo vertex: Ctrl+Backspace)",
                    variable=app.use_aoi, command=app._on_toggle_use_aoi).pack(anchor="w")
 
-    # AOI mode row
     m = tk.Frame(aoi); m.pack(fill="x", pady=(4,2))
     tk.Label(m, text="Count within AOI by:").pack(side="left")
     tk.Radiobutton(m, text="Centroid inside polygon", variable=app.aoi_mode, value="centroid").pack(side="left", padx=8)
@@ -51,7 +43,6 @@ def build_main_ui(app):
     tk.Spinbox(m, from_=0.05, to=1.0, increment=0.05, width=5,
                textvariable=app.aoi_box_frac).pack(side="left")
 
-    # AOI actions row
     act = tk.Frame(aoi); act.pack(fill="x", pady=(4,2))
     tk.Button(act, text="Open AOI editor…", command=app._open_aoi_editor).pack(side="left")
     tk.Button(act, text="Import AOIs", command=app.import_aois_from_input).pack(side="left", padx=6)
@@ -68,7 +59,7 @@ def build_main_ui(app):
 
     # ========== Classes (shorter height; scrollbar auto-hides) ==========
     cl = tk.LabelFrame(root, text="Classes (load weights to populate)"); cl.pack(fill="both", expand=True, pady=(0,6))
-    app.classes_scroll = ScrollableFrame(cl, height=120)  # ~half height
+    app.classes_scroll = ScrollableFrame(cl, height=120)
     app.classes_scroll.pack(fill="both", expand=True)
     app.classes_container = app.classes_scroll.inner
     app.classes_scroll.canvas.bind("<Configure>", lambda e: app._on_classes_canvas_config(e.width))
