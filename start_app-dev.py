@@ -1,4 +1,4 @@
-# start_app.py — launcher (split), visible progress, multi-AOI, per-AOI CSV, centroid overlay fix
+# start_app.py — launcher (modular), pewny pasek postępu, poprawione AOI i lista klas
 from __future__ import annotations
 
 import os, sys, json, time, errno
@@ -47,7 +47,7 @@ DEFAULT_SEAM_BAND_FACTOR = 0.10
 DEFAULT_SEAM_WEIGHT = 0.35
 DEFAULT_MARGIN_WEIGHT = 0.25
 
-def auto_wbf_iou(q, nms):  # auto WBF IoU jak wcześniej
+def auto_wbf_iou(q, nms):
     return 0.60 if int(q) == 5 else max(0.55, float(nms))
 
 # ===== helpers (legacy PT) =====
@@ -76,47 +76,33 @@ def _nms_numpy(xyxy, scores, iou_thr=0.5):
 
 def _bbox_center(b): return (0.5*(b[0]+b[2]), 0.5*(b[1]+b[3]))
 
-def _select_torch_device(requested: str) -> str:
-    req = (requested or "").strip().lower()
+def _select_torch_device(pref: str) -> str:
+    # "auto" => "0" jeśli CUDA dostępne inaczej "cpu"
     try:
         import torch
-        cuda = torch.cuda.is_available()
-        gpu_n = torch.cuda.device_count() if cuda else 0
+        if pref and pref not in ("auto",):
+            return pref
+        return "0" if torch.cuda.is_available() else "cpu"
     except Exception:
-        cuda = False; gpu_n = 0
-    if req in ("", "auto", "gpu", "cuda", "0"):
-        return "0" if (cuda and gpu_n>0) else "cpu"
-    if req in ("cpu", "-1"):
-        return "cpu"
-    return req
+        return "cpu" if (pref in ("auto","")) else pref
 
 # ----- AOI helpers -----
-def _build_aoi_masks(h, w, aois):
-    """Zwraca listę (name, mask) dla AOI; maska = binarna (uint8)."""
-    if cv2 is None or np is None or not aois:
-        return []
-    masks = []
-    for a in aois:
-        poly = a.get("polygon") or []
-        if len(poly) >= 3:
-            m = np.zeros((h, w), dtype=np.uint8)
-            cv2.fillPoly(m, [np.array(poly, dtype=np.int32)], 255)
-            masks.append((a.get("name","AOI"), m))
-    return masks
-
-def _build_union_mask(h, w, aois):
-    """Maska unii wszystkich AOI (do szybkich testów centroidu)."""
+def _build_aoi_mask(h, w, aois):
+    """Union mask of all polygons in aois (list of {'polygon':[(x,y),...]})"""
     if cv2 is None or np is None or not aois:
         return None
-    m = np.zeros((h, w), dtype=np.uint8)
+    mask = np.zeros((h, w), dtype=np.uint8)
+    polys = []
     for a in aois:
         poly = a.get("polygon") or []
         if len(poly) >= 3:
-            cv2.fillPoly(m, [np.array(poly, dtype=np.int32)], 255)
-    return m
+            polys.append(np.array(poly, dtype=np.int32))
+    if polys:
+        cv2.fillPoly(mask, polys, 255)
+    return mask
 
 def _persist_aoi_for_images(input_root: Path, images: list[Path], aoi_map: dict, log_fn):
-    """Zapis AOI .json + .png mask per image (unia poligonów); ignoruje EEXIST."""
+    """Save AOI .json + .png mask per image (union of polygons), ignore EEXIST."""
     if not aoi_map or cv2 is None:
         return
     aoi_dir = input_root / "aoi"; mask_dir = input_root / "aoi_masks"
@@ -135,10 +121,10 @@ def _persist_aoi_for_images(input_root: Path, images: list[Path], aoi_map: dict,
             im = cv2.imread(str(p))
             if im is not None:
                 h,w = im.shape[:2]
-                mask = _build_union_mask(h, w, aois)
+                mask = _build_aoi_mask(h, w, aois)
                 if mask is not None:
                     cv2.imwrite(str(mask_dir / f"{p.stem}.png"), mask)
-            log_fn(f"[AOI] Persisted for {p.name} ({len(aois)} ROI)")
+            log_fn(f"[AOI] Persisted for {p.name} ({sum(len(a.get('polygon',[])) for a in aois)} pts total)")
         except Exception as e:
             log_fn(f"[AOI][WARN] Persist failed for {p.name}: {e}")
 
@@ -149,7 +135,7 @@ class App(tk.Tk):
         self.title(APP_TITLE)
         self.geometry("1120x880"); self.minsize(980,760)
 
-        self.ScrollableFrame = ScrollableFrame
+        self.ScrollableFrame = ScrollableFrame  # injected for ui_panels
 
         # selections
         self.input_dir = tk.StringVar(value="")
@@ -302,44 +288,26 @@ class App(tk.Tk):
             self._log(f"[AOI] Saved {len(self.aoi_map[str(p)])} polygons for {Path(p).name}")
         load_idx(0)
 
-    # ---------- UI helpers ----------
-    def _update_preset_label(self):
-        p = QUALITY_PRESETS.get(int(self.quality.get()), QUALITY_PRESETS[DEFAULT_QUALITY])
-        try:
-            self.preset_label.config(text=f"tile={p['tile']}  overlap={p['overlap']}  conf={p['conf']}  nms={p['iou_nms']}  WBF={p['use_wbf']}")
-        except Exception: pass
-
-    def open_advanced(self): open_advanced(self)  # defined below
-
-    def _resolve_inputs(self) -> list[Path]:
-        if self.selected_files: return self.selected_files[:]
-        if not self.input_dir.get().strip(): return []
-        return collect_images(Path(self.input_dir.get().strip()))
-
+    # ---------- classes ----------
     def _build_class_checkboxes(self):
-        for w in getattr(self, "classes_container", []).winfo_children():
+        for w in self._class_cb_widgets:
             try: w.destroy()
-            except: pass
-        for w in getattr(self, "_class_cb_widgets", []):
-            try: w.destroy()
-            except: pass
-        self.class_vars.clear(); self._class_cb_widgets = []
-        if not self.class_names:
-            tk.Label(self.classes_container, text="(Load weights to show classes)").grid(row=0, column=0, sticky="w")
-            return
-        for i, name in sorted(self.class_names.items(), key=lambda kv: kv[0]):
+            except Exception: pass
+        self._class_cb_widgets = []
+        self.class_vars = {}
+        names = [self.class_names[i] for i in sorted(self.class_names.keys())] if self.class_names else []
+        for i, nm in enumerate(names):
             var = tk.BooleanVar(value=False)
-            self.class_vars[i] = var
-            cb = tk.Checkbutton(self.classes_container, text=f"[{i}] {name}", variable=var, anchor="w")
-            cb.grid(row=0, column=0, sticky="w", padx=6, pady=4)  # zostanie zreflowowane
-            self._class_cb_widgets.append(cb)
+            cb = tk.Checkbutton(self.classes_container, text=nm, variable=var, anchor="w", padx=6)
+            self.class_vars[i] = var; self._class_cb_widgets.append(cb)
+            cb.grid(row=0, column=i, sticky="w", padx=6, pady=4)  # wstępnie, zaraz przepakujemy
         self._reflow_class_grid()
 
     def _reflow_class_grid(self, width: int=None):
         if not self._class_cb_widgets: return
         try: cw = int(width or self.classes_container.winfo_width() or 800)
         except Exception: cw = 800
-        cols = max(3, min(10, cw // 160))   # gęstsza siatka
+        cols = max(2, min(8, cw // 220))
         for idx, w in enumerate(self._class_cb_widgets):
             r,c = divmod(idx, cols)
             w.grid_configure(row=r, column=c, sticky="w", padx=6, pady=4)
@@ -374,6 +342,14 @@ class App(tk.Tk):
                     f.write(line + "\n")
         except Exception: pass
 
+    # ---------- inputs resolve ----------
+    def _resolve_inputs(self) -> list[Path]:
+        if self.selected_files:
+            return [Path(p) for p in self.selected_files]
+        inp = Path(self.input_dir.get().strip()) if self.input_dir.get().strip() else None
+        if not inp or not inp.exists(): return []
+        return collect_images(inp)
+
     # ---------- run ----------
     def start(self):
         try:
@@ -403,7 +379,7 @@ class App(tk.Tk):
                 if base.get("wbf_auto", True):
                     base["wbf_iou"] = auto_wbf_iou(int(self.quality.get()), base["iou_nms"])
 
-            # Persist AOIs to input
+            # Persist AOIs to input (optional)
             if self.use_aoi.get() and self.aoi_map and self.persist_aoi.get() and cv2 is not None:
                 root = imgs[0].parent if self.selected_files else Path(self.input_dir.get().strip())
                 _persist_aoi_for_images(root, imgs, self.aoi_map, self._log)
@@ -413,7 +389,8 @@ class App(tk.Tk):
             self._log(f"Path: {'legacy-PT' if use_legacy_pt else 'engine-core'}")
 
             self.btn_start.config(state="disabled"); self.btn_abort.config(state="normal")
-            self._stop = False; self.progress_var.set(0.0); self.update_idletasks()
+            self._stop = False; self.progress_var.set(0.0); self.progress_label.set("Running…")
+            self.update_idletasks()
 
             if use_legacy_pt:
                 totals = self._run_legacy_pt(imgs, outdir, model, base)
@@ -431,10 +408,11 @@ class App(tk.Tk):
     def abort(self): self._stop = True; self._log("=== ABORT requested ===")
 
     def _on_progress(self, i, n, eta_sec):
+        # wywoływane z app_core.predict_batch po każdym obrazie (patrz progress_cb) :contentReference[oaicite:3]{index=3}
         pct = 100.0 * (i / max(1,n)); self.progress_var.set(pct)
         m = int(eta_sec // 60); s = int(eta_sec % 60)
         self.progress_label.set(f"Image {i}/{n} — ETA {m:02d}:{s:02d}")
-        self.update_idletasks()
+        self.update_idletasks()  # wymuś repaint
 
     # ---------- engine-core path ----------
     def _run_engine_core(self, imgs, outdir: Path, model, base):
@@ -459,18 +437,15 @@ class App(tk.Tk):
             outdir=outdir, annotate=cfg.annotate,
             progress_cb=self._on_progress, abort_cb=lambda: self._stop
         )
-        # Save CSV/JSON (global)
+        # Save CSV/JSON
         class_names = sorted({k for _, cnt in per_image for k in cnt.keys()})
         rows = [[path] + [cnt.get(c,0) for c in class_names] for path, cnt in per_image]
         save_csv(rows, header=["image_path"]+class_names, out_path=outdir/"results_per_image.csv")
         save_json(totals, out_path=outdir/"results_totals.json")
         save_run_metadata(outdir, imgs, cfg, totals)
-
-        # Uwaga: per-AOI CSV generuję obecnie pewnie w ścieżce legacy-PT.
-        # (Jeśli chcesz, dodamy odczyt z per-image JSONów silnika i przeliczymy AOI również tutaj.)
         return totals
 
-    # ---------- legacy-PT path (Ultralytics + tiling, multi-AOI + per-AOI CSV) ----------
+    # ---------- legacy-PT path (Ultralytics + tiling, multi-AOI) ----------
     def _run_legacy_pt(self, imgs, outdir: Path, model, base):
         if cv2 is None or np is None or YOLO is None:
             raise RuntimeError("Legacy PT path requires opencv-python, numpy, ultralytics installed.")
@@ -485,16 +460,11 @@ class App(tk.Tk):
         tile = int(base["tile"]); overlap=float(base["overlap"])
         conf=float(base["conf"]); iou=float(base["iou_nms"])
         classes = self._selected_classes()
-        overlay = self.overlay_mode.get()
+        show_conf = (self.overlay_mode.get()=="boxes_conf")
         start = time.time()
 
         totals = {}
-        per_rows_global = []  # do results_per_image.csv
-        # do per-AOI CSV:
-        per_rows_aoi = []     # list dicts { "image":path, "aoi_totals":{name:tot}, "aoi_cls":{(name,cls):cnt} }
-        all_aoi_names = set()
-        all_class_names = set()
-
+        per_rows = []  # for CSV
         for idx, p in enumerate(imgs, 1):
             if self._stop: break
             img = cv2.imread(str(p))
@@ -525,273 +495,193 @@ class App(tk.Tk):
                 frac_img = r_i / max(1,len(ys))
                 frac_all = ((idx-1)+frac_img)/len(imgs)
                 elapsed = time.time()-start
-                m = int(max(0.0, (elapsed/frac_all - elapsed)) // 60)
-                s = int(max(0.0, (elapsed/frac_all - elapsed)) % 60)
+                tot = max(1e-9, elapsed / max(1e-9, frac_all))
+                remain = max(0.0, tot - elapsed)
+                m = int(remain // 60); s = int(remain % 60)
                 self.progress_var.set(frac_all*100.0)
                 self.progress_label.set(f"Image {idx}/{len(imgs)} — ETA {m:02d}:{s:02d}")
                 self.update_idletasks()
 
-            # ---- NMS ----
+            # NMS
             if all_boxes:
                 keep = _nms_numpy(np.array(all_boxes,np.float32), np.array(all_scores,np.float32), iou_thr=iou)
                 all_boxes = [all_boxes[k] for k in keep]
                 all_scores = [all_scores[k] for k in keep]
                 all_cids = [all_cids[k] for k in keep]
 
-            # ---- AOI (multi) przygotowanie masek ----
+            # AOI filtering (union)
             aois = (self.aoi_map.get(str(p)) or []) if self.use_aoi.get() else []
-            masks = _build_aoi_masks(H, W, aois) if aois else []
-            union_mask = _build_union_mask(H, W, aois) if aois else None
-
-            # ---- global counts + per-AOI counts ----
-            id2name = self.class_names if self.class_names else {i:str(i) for i in sorted(set(all_cids))}
-            counts_global = {}
-            counts_aoi_tot = {}
-            counts_aoi_cls = {}
-            for cc in sorted(set(id2name.keys())):
-                all_class_names.add(id2name[cc])
-
-            kept_idx = list(range(len(all_boxes)))
-            # dodatkowy filtr centroid/box względem unii (żeby zgadzało się z AOI mode)
             if aois:
-                mode = self.aoi_mode.get()
-                if mode == "box" and union_mask is not None:
+                mask = _build_aoi_mask(H, W, aois)
+                kept_idx = []
+                if self.aoi_mode.get() == "box" and mask is not None:
                     thr = float(self.aoi_box_frac.get() or 0.0)
-                    kidx = []
-                    for i in kept_idx:
-                        x1,y1,x2,y2 = [max(0,int(v)) for v in all_boxes[i]]
+                    for i, bb in enumerate(all_boxes):
+                        x1,y1,x2,y2 = [max(0,int(v)) for v in bb]
                         area = max(1, (x2-x1)*(y2-y1))
-                        inter = int((union_mask[y1:y2, x1:x2] > 0).sum())
+                        inter = int((mask[y1:y2, x1:x2] > 0).sum())
                         if inter / float(area) >= thr:
-                            kidx.append(i)
-                    kept_idx = kidx
-                else:  # centroid
-                    kidx = []
-                    for i in kept_idx:
-                        cx,cy = map(int, _bbox_center(all_boxes[i]))
-                        if 0 <= cx < W and 0 <= cy < H and union_mask is not None and union_mask[cy, cx] > 0:
-                            kidx.append(i)
-                    kept_idx = kidx
+                            kept_idx.append(i)
+                else:  # centroid inside
+                    if mask is not None:
+                        for i, bb in enumerate(all_boxes):
+                            cx,cy = map(int, _bbox_center(bb))
+                            if 0 <= cx < W and 0 <= cy < H and mask[cy, cx] > 0:
+                                kept_idx.append(i)
+                all_boxes = [all_boxes[i] for i in kept_idx]
+                all_scores= [all_scores[i] for i in kept_idx]
+                all_cids  = [all_cids[i]   for i in kept_idx]
 
-            # zliczanie
-            for i in kept_idx:
-                cid = all_cids[i]
-                cname = id2name.get(cid, str(cid))
-                counts_global[cname] = counts_global.get(cname, 0) + 1
-                # per-AOI: przypisz detekcję do wszystkich AOI, które spełniają warunek
-                if masks:
-                    for aoi_name, m in masks:
-                        hit = False
-                        if self.aoi_mode.get() == "box":
-                            thr = float(self.aoi_box_frac.get() or 0.0)
-                            x1,y1,x2,y2 = [max(0,int(v)) for v in all_boxes[i]]
-                            area = max(1, (x2-x1)*(y2-y1))
-                            inter = int((m[y1:y2, x1:x2] > 0).sum())
-                            hit = (inter / float(area)) >= thr
-                        else:
-                            cx,cy = map(int, _bbox_center(all_boxes[i]))
-                            hit = (0 <= cx < W and 0 <= cy < H and m[cy, cx] > 0)
-                        if hit:
-                            counts_aoi_tot[aoi_name] = counts_aoi_tot.get(aoi_name, 0) + 1
-                            counts_aoi_cls[(aoi_name, cname)] = counts_aoi_cls.get((aoi_name, cname), 0) + 1
-                            all_aoi_names.add(aoi_name)
-
-            # sumy globalne do totals
-            for nm, v in counts_global.items():
+            # counts & outputs
+            id2name = {i:str(i) for i in sorted(set(all_cids))}
+            counts = {}
+            for c in all_cids:
+                nm = id2name.get(c, str(c)); counts[nm] = counts.get(nm,0)+1
+            for nm, v in counts.items():
                 totals[nm] = totals.get(nm,0)+v
 
-            # ---- zapisy wyjściowe ----
-            # JSON per-image (zawiera też per-AOI)
+            # per-image JSON (legacy path)
             dets = []
-            for i in kept_idx:
-                bb, sc, cc = all_boxes[i], all_scores[i], all_cids[i]
+            for bb,sc,cc in zip(all_boxes, all_scores, all_cids):
                 cx,cy = _bbox_center(bb)
                 dets.append({"bbox":bb, "score":sc, "class_id":int(cc),
                              "class_name": id2name.get(cc,str(cc)), "cx":cx, "cy":cy})
             with open(ann_dir/f"{p.stem}.json","w",encoding="utf-8") as f:
-                json.dump({"image": str(p),
-                           "counts_global": counts_global,
-                           "counts_aoi_total": counts_aoi_tot,
-                           "counts_aoi_by_class": {f"{k[0]}::{k[1]}":v for k,v in counts_aoi_cls.items()},
-                           "detections": dets},
-                          f, ensure_ascii=False, indent=2)
+                json.dump({"image": str(p), "counts": counts, "detections": dets}, f, ensure_ascii=False, indent=2)
 
-            # annotated preview (+ AOI)
+            # preview
             preview = img.copy()
-            if masks:
-                for a in aois:
-                    poly = a.get("polygon") or []
-                    if len(poly) >= 3:
-                        cv2.polylines(preview, [np.array(poly, np.int32)], True, (0,255,255), 2)
-            for i in kept_idx:
-                x1,y1,x2,y2 = map(int, all_boxes[i])
-                cname = id2name.get(all_cids[i], str(all_cids[i]))
-                if overlay == "centroid":
-                    cx,cy = map(int, _bbox_center(all_boxes[i]))
-                    cv2.circle(preview, (cx,cy), 3, (0,255,0), -1)
-                else:
-                    cv2.rectangle(preview,(x1,y1),(x2,y2),(0,255,0),2)
-                    if overlay == "boxes_conf":
-                        cv2.putText(preview, cname, (x1,max(14,y1-6)),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,255,0), 1, cv2.LINE_AA)
-            # bottom-right summary (global) + AOI totals
-            summary_lines = []
-            if counts_global:
-                summary_lines.append("GLOBAL: " + "  ".join([f"{k}:{v}" for k,v in sorted(counts_global.items())]))
-            if counts_aoi_tot:
-                for nm, v in sorted(counts_aoi_tot.items()):
-                    summary_lines.append(f"{nm}: {v}")
-            if summary_lines:
-                txt = " | ".join(summary_lines)
-                (tw,th),_ = cv2.getTextSize(txt, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
+            if aois:
+                polys = [np.array(a.get("polygon", []), np.int32) for a in aois if len(a.get("polygon",[]))>=3]
+                for poly in polys:
+                    cv2.polylines(preview, [poly], True, (0,255,255), 2)
+            for bb,sc,cc in zip(all_boxes, all_scores, all_cids):
+                x1,y1,x2,y2 = map(int, bb)
+                cv2.rectangle(preview,(x1,y1),(x2,y2),(0,255,0),2)
+                if show_conf:
+                    nm = id2name.get(cc, str(cc))
+                    cv2.putText(preview, f"{nm} {sc:.2f}", (x1,max(14,y1-6)),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,255,0), 1, cv2.LINE_AA)
+            if counts:
+                txt = "  ".join([f"{k}:{v}" for k,v in counts.items()])
+                (tw,th),_ = cv2.getTextSize(txt, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)
                 x2,y2 = W-10, H-10
                 cv2.rectangle(preview, (x2-tw-12,y2-th-10),(x2,y2),(0,0,0),-1)
-                cv2.putText(preview, txt, (x2-tw-8,y2-12), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,255,255),2, cv2.LINE_AA)
+                cv2.putText(preview, txt, (x2-tw-8,y2-12), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255,255,255),2, cv2.LINE_AA)
             cv2.imwrite(str(prv_dir/f"{p.stem}_annotated.jpg"), preview)
 
-            # CSV rows collect
-            g_names = sorted(counts_global.keys())
-            per_rows_global.append(([ "image_path"]+g_names, [str(p)] + [counts_global.get(n,0) for n in g_names]))
-            per_rows_aoi.append({
-                "image": str(p),
-                "aoi_totals": dict(counts_aoi_tot),
-                "aoi_cls": dict(counts_aoi_cls)
-            })
+            # CSV row (legacy path)
+            all_names = sorted(set(id2name.values()))
+            row = [str(p)] + [counts.get(nm,0) for nm in all_names]
+            header = ["image_path"] + all_names
+            per_rows.append((header, row))
 
-        # save totals
+        # save totals + CSV (per image)
         save_json(totals, out_path=outdir/"results_totals.json")
-
-        # CSV global (per image)
-        if per_rows_global:
-            final_names = sorted({n for (hdr,_r) in per_rows_global for n in hdr[1:]})
+        if per_rows:
+            # merge header across rows
+            final_names = sorted({n for (hdr,_r) in per_rows for n in hdr[1:]})
             rows = []
-            for (hdr, r) in per_rows_global:
-                path = r[0]; local = dict(zip(hdr[1:], r[1:]))
+            for (_hdr, r) in per_rows:
+                path = r[0]; local = dict(zip(_hdr[1:], r[1:]))
                 rows.append([path] + [local.get(n,0) for n in final_names])
             save_csv(rows, header=["image_path"]+final_names, out_path=outdir/"results_per_image.csv")
-
-        # CSV per-AOI (totale + per-class)
-        if per_rows_aoi:
-            # zbuduj pełny zestaw nazw AOI i klas
-            for rec in per_rows_aoi:
-                all_aoi_names.update(rec["aoi_totals"].keys())
-                all_aoi_names.update({k[0] for k in rec["aoi_cls"].keys()})
-                all_class_names.update({k[1] for k in rec["aoi_cls"].keys()})
-            aoi_total_cols = [f"AOI:{nm}" for nm in sorted(all_aoi_names)]
-            aoi_cls_cols = [f"AOI:{a}::{c}" for a in sorted(all_aoi_names) for c in sorted(all_class_names)]
-            header = ["image_path"] + aoi_total_cols + aoi_cls_cols
-            rows = []
-            for rec in per_rows_aoi:
-                imgp = rec["image"]
-                tot = rec["aoi_totals"]; cls = rec["aoi_cls"]
-                row = [imgp] + [tot.get(nm,0) for nm in sorted(all_aoi_names)] + \
-                      [cls.get((a,c),0) for a in sorted(all_aoi_names) for c in sorted(all_class_names)]
-                rows.append(row)
-            save_csv(rows, header=header, out_path=outdir/"results_per_image_by_aoi.csv")
-
         return totals
 
-    # ---------- misc ----------
-    def _eta(self, elapsed_s: float, progress_frac: float) -> str:
-        if progress_frac <= 1e-6: return "--:--"
-        total = elapsed_s / progress_frac; remain = max(0.0, total - elapsed_s)
-        m = int(remain // 60); s = int(remain % 60); return f"{m:02d}:{s:02d}"
-
-# ------- Advanced dialog -------
-def open_advanced(app):
-    import tkinter as tk
-    win = tk.Toplevel(app); win.title("Advanced options"); win.geometry("660x600")
-
-    tk.Label(win, text="Current preset (from the slider):").pack(anchor="w", padx=8, pady=(8,2))
-    p = QUALITY_PRESETS.get(int(app.quality.get()), QUALITY_PRESETS[DEFAULT_QUALITY])
-    preset_txt = tk.StringVar(value=f"tile={p['tile']}  overlap={p['overlap']}  conf={p['conf']}  nms={p['iou_nms']}  WBF={p['use_wbf']}")
-    tk.Entry(win, textvariable=preset_txt, state="readonly").pack(fill="x", padx=8)
-
-    current_auto_wbf = auto_wbf_iou(int(app.quality.get()), float(p["iou_nms"]))
-
-    tk.Label(win, text="Override (leave blank = use preset/auto):").pack(anchor="w", padx=8, pady=(10,2))
-    def row(lbl, var):
-        f = tk.Frame(win); f.pack(fill="x", pady=3)
-        tk.Label(f, text=lbl, width=30, anchor="w").pack(side="left")
-        tk.Entry(f, textvariable=var, width=18).pack(side="left"); return f
-
-    base = app.advanced_params if app.advanced_override else {
-        **p, "wbf_alpha": DEFAULT_WBF_ALPHA, "wbf_iou": None, "wbf_auto": True,
-        "seam_iou_low": DEFAULT_SEAM_IOU_LOW, "seam_band_factor": DEFAULT_SEAM_BAND_FACTOR,
-        "seam_weight": DEFAULT_SEAM_WEIGHT, "margin_weight": DEFAULT_MARGIN_WEIGHT
-    }
-    S = lambda k, d="": tk.StringVar(value=str(base.get(k, d)))
-    var_tile, var_ov, var_conf, var_nms = S("tile"), S("overlap"), S("conf"), S("iou_nms")
-    var_wbf = tk.BooleanVar(value=bool(base.get("use_wbf", True)))
-    var_alpha = S("wbf_alpha", DEFAULT_WBF_ALPHA)
-    var_wbf_auto = tk.BooleanVar(value=bool(base.get("wbf_auto", True)))
-    var_wbf_iou = tk.StringVar(value=str(current_auto_wbf) if var_wbf_auto.get() else ("" if base.get("wbf_iou", None) is None else str(base["wbf_iou"])))
-    var_seam_iou_low, var_seam_band, var_seam_w, var_margin_w = S("seam_iou_low", DEFAULT_SEAM_IOU_LOW), S("seam_band_factor", DEFAULT_SEAM_BAND_FACTOR), S("seam_weight", DEFAULT_SEAM_WEIGHT), S("margin_weight", DEFAULT_MARGIN_WEIGHT)
-
-    row("Tile size (px)", var_tile); row("Overlap (0..1)", var_ov); row("Confidence", var_conf); row("IoU NMS", var_nms)
-    f2 = tk.Frame(win); f2.pack(fill="x", pady=4)
-    tk.Checkbutton(f2, text="Use WBF deduplication", variable=var_wbf).pack(anchor="w", padx=8)
-    f3 = tk.Frame(win); f3.pack(fill="x", pady=3)
-    tk.Label(f3, text="WBF alpha", width=30, anchor="w").pack(side="left", padx=8)
-    tk.Entry(f3, textvariable=var_alpha, width=18).pack(side="left")
-    f4 = tk.Frame(win); f4.pack(fill="x", pady=3)
-    cb = tk.Checkbutton(f4, text="Auto WBF IoU (ULTRA=0.60, otherwise=max(0.55, NMS))",
-                        variable=var_wbf_auto, command=lambda: toggle_wbf_iou_state())
-    cb.pack(anchor="w", padx=8)
-    tk.Label(f4, text="WBF IoU (when Auto OFF):", width=30, anchor="w").pack(side="left", padx=8)
-    ent_wbf = tk.Entry(f4, textvariable=var_wbf_iou, width=18); ent_wbf.pack(side="left")
-
-    row("Seam-dedup: low IoU", var_seam_iou_low)
-    row("Seam-band factor (× step)", var_seam_band)
-    row("Weight: margin", var_margin_w)
-    row("Weight: seam distance", var_seam_w)
-
-    def toggle_wbf_iou_state():
-        if var_wbf_auto.get():
-            var_wbf_iou.set(str(current_auto_wbf)); ent_wbf.config(state="disabled")
-        else:
-            var_wbf_iou.set(""); ent_wbf.config(state="normal")
-    toggle_wbf_iou_state()
-
-    btns = tk.Frame(win); btns.pack(fill="x", pady=12)
-    def apply_override():
+    # ---------- Advanced ----------
+    def _update_preset_label(self):
         try:
-            cur = QUALITY_PRESETS.get(int(app.quality.get()), QUALITY_PRESETS[DEFAULT_QUALITY])
-            def get_or(v, cast, key): s=v.get().strip(); return cast(s) if s!="" else cast(cur[key])
-            app.advanced_params = {
-                "tile": get_or(var_tile, int, "tile"),
-                "overlap": get_or(var_ov, float, "overlap"),
-                "conf": get_or(var_conf, float, "conf"),
-                "iou_nms": get_or(var_nms, float, "iou_nms"),
-                "use_wbf": bool(var_wbf.get()),
-                "wbf_alpha": float(var_alpha.get()) if var_alpha.get().strip()!="" else DEFAULT_WBF_ALPHA,
-                "wbf_iou": (None if var_wbf_auto.get() else (float(var_wbf_iou.get()) if var_wbf_iou.get().strip()!="" else None)),
-                "wbf_auto": bool(var_wbf_auto.get()),
-                "seam_iou_low": float(var_seam_iou_low.get()) if var_seam_iou_low.get().strip()!="" else DEFAULT_SEAM_IOU_LOW,
-                "seam_band_factor": float(var_seam_band.get()) if var_seam_band.get().strip()!="" else DEFAULT_SEAM_BAND_FACTOR,
-                "seam_weight": float(var_seam_w.get()) if var_seam_w.get().strip()!="" else DEFAULT_SEAM_WEIGHT,
-                "margin_weight": float(var_margin_w.get()) if var_margin_w.get().strip()!="" else DEFAULT_MARGIN_WEIGHT,
-            }
-            app.advanced_override = True
-            app._log(f"[ADV] Override enabled. Auto WBF IoU = {app.advanced_params['wbf_auto']}."); win.destroy()
-        except Exception as e:
-            messagebox.showerror("Advanced", str(e))
-    def reset_to_preset():
-        app.advanced_override = False; app._log("[ADV] Preset restored from the slider."); win.destroy()
-    def apply_anti_seam():
-        cur = QUALITY_PRESETS.get(int(app.quality.get()), QUALITY_PRESETS[DEFAULT_QUALITY])
-        app.advanced_params = {
-            "tile": int(var_tile.get()) if var_tile.get().strip() else int(cur["tile"]),
-            "overlap": 0.55, "conf": float(var_conf.get()) if var_conf.get().strip() else float(cur["conf"]),
-            "iou_nms": float(var_nms.get()) if var_nms.get().strip() else float(cur["iou_nms"]),
-            "use_wbf": True, "wbf_alpha": 0.35, "wbf_iou": 0.60, "wbf_auto": False,
-            "seam_iou_low": 0.40, "seam_band_factor": 0.12, "seam_weight": 0.45, "margin_weight": 0.30,
-        }
-        app.advanced_override = True; app._log("[ADV] Anti-seam preset applied."); win.destroy()
+            p = QUALITY_PRESETS.get(int(self.quality.get()), QUALITY_PRESETS[DEFAULT_QUALITY])
+            self.preset_label.config(text=f"tile={p['tile']}  overlap={p['overlap']}  conf={p['conf']}  nms={p['iou_nms']}  WBF={p['use_wbf']}")
+        except Exception:
+            pass
 
-    tk.Button(btns, text="Apply override", command=apply_override).pack(side="left", padx=6)
-    tk.Button(btns, text="Restore preset", command=reset_to_preset).pack(side="left", padx=6)
-    tk.Button(btns, text="Anti-seam (dedup)", command=apply_anti_seam).pack(side="left", padx=6)
+    def open_advanced(self):
+        import tkinter as tk
+        win = tk.Toplevel(self); win.title("Advanced options"); win.geometry("660x600")
+
+        tk.Label(win, text="Current preset (from the slider):").pack(anchor="w", padx=8, pady=(8,2))
+        p = QUALITY_PRESETS.get(int(self.quality.get()), QUALITY_PRESETS[DEFAULT_QUALITY])
+        preset_txt = tk.StringVar(value=f"tile={p['tile']}  overlap={p['overlap']}  conf={p['conf']}  nms={p['iou_nms']}  WBF={p['use_wbf']}")
+        tk.Entry(win, textvariable=preset_txt, state="readonly").pack(fill="x", padx=8)
+
+        current_auto_wbf = auto_wbf_iou(int(self.quality.get()), float(p["iou_nms"]))
+
+        tk.Label(win, text="Override (leave blank = use preset/auto):").pack(anchor="w", padx=8, pady=(10,2))
+        def row(lbl, var):
+            f = tk.Frame(win); f.pack(fill="x", pady=3)
+            tk.Label(f, text=lbl, width=30, anchor="w").pack(side="left")
+            tk.Entry(f, textvariable=var, width=18).pack(side="left"); return f
+
+        base = self.advanced_params if self.advanced_override else {
+            **p, "wbf_alpha": DEFAULT_WBF_ALPHA, "wbf_iou": None, "wbf_auto": True,
+            "seam_iou_low": DEFAULT_SEAM_IOU_LOW, "seam_band_factor": DEFAULT_SEAM_BAND_FACTOR,
+            "seam_weight": DEFAULT_SEAM_WEIGHT, "margin_weight": DEFAULT_MARGIN_WEIGHT
+        }
+        S = lambda k, d="": tk.StringVar(value=str(base.get(k, d)))
+        var_tile, var_ov, var_conf, var_nms = S("tile"), S("overlap"), S("conf"), S("iou_nms")
+        var_wbf = tk.BooleanVar(value=bool(base.get("use_wbf", True)))
+        var_alpha = S("wbf_alpha", DEFAULT_WBF_ALPHA)
+        var_wbf_iou = tk.StringVar(value="" if base.get("wbf_iou", None) is None else str(base.get("wbf_iou")))
+        var_wbf_auto = tk.BooleanVar(value=bool(base.get("wbf_auto", True)))
+        var_seam_iou_low = S("seam_iou_low", DEFAULT_SEAM_IOU_LOW)
+        var_seam_band = S("seam_band_factor", DEFAULT_SEAM_BAND_FACTOR)
+        var_seam_w = S("seam_weight", DEFAULT_SEAM_WEIGHT)
+        var_margin_w = S("margin_weight", DEFAULT_MARGIN_WEIGHT)
+
+        row("Tile size", var_tile); row("Overlap (0..0.9)", var_ov); row("Confidence", var_conf); row("NMS IoU", var_nms)
+        f = tk.Frame(win); f.pack(fill="x", pady=3)
+        tk.Checkbutton(f, text="Use WBF", variable=var_wbf).pack(side="left", padx=(0,10))
+        tk.Label(f, text="WBF alpha:").pack(side="left"); tk.Entry(f, textvariable=var_alpha, width=8).pack(side="left")
+        tk.Checkbutton(f, text="Auto WBF IoU", variable=var_wbf_auto).pack(side="left", padx=(12,10))
+        tk.Label(f, text="WBF IoU (manual):").pack(side="left"); tk.Entry(f, textvariable=var_wbf_iou, width=8).pack(side="left")
+
+        row("Seam IoU low", var_seam_iou_low); row("Seam band factor", var_seam_band)
+        row("Seam weight", var_seam_w); row("Margin weight", var_margin_w)
+
+        btns = tk.Frame(win); btns.pack(fill="x", pady=10)
+
+        def get_or(sv: tk.StringVar, cast, name):
+            txt = sv.get().strip()
+            return cast(txt) if txt != "" else base.get(name)
+
+        def apply_override():
+            try:
+                self.advanced_params = {
+                    "tile": get_or(var_tile, int, "tile"),
+                    "overlap": get_or(var_ov, float, "overlap"),
+                    "conf": get_or(var_conf, float, "conf"),
+                    "iou_nms": get_or(var_nms, float, "iou_nms"),
+                    "use_wbf": bool(var_wbf.get()),
+                    "wbf_alpha": float(var_alpha.get()) if var_alpha.get().strip()!="" else DEFAULT_WBF_ALPHA,
+                    "wbf_iou": (None if var_wbf_auto.get() else (float(var_wbf_iou.get()) if var_wbf_iou.get().strip()!="" else None)),
+                    "wbf_auto": bool(var_wbf_auto.get()),
+                    "seam_iou_low": float(var_seam_iou_low.get()) if var_seam_iou_low.get().strip()!="" else DEFAULT_SEAM_IOU_LOW,
+                    "seam_band_factor": float(var_seam_band.get()) if var_seam_band.get().strip()!="" else DEFAULT_SEAM_BAND_FACTOR,
+                    "seam_weight": float(var_seam_w.get()) if var_seam_w.get().strip()!="" else DEFAULT_SEAM_WEIGHT,
+                    "margin_weight": float(var_margin_w.get()) if var_margin_w.get().strip()!="" else DEFAULT_MARGIN_WEIGHT,
+                }
+                self.advanced_override = True
+                self._log(f"[ADV] Override enabled. Auto WBF IoU = {self.advanced_params['wbf_auto']}."); win.destroy()
+            except Exception as e:
+                messagebox.showerror("Advanced", str(e))
+        def reset_to_preset():
+            self.advanced_override = False; self._log("[ADV] Preset restored from the slider."); win.destroy()
+        def apply_anti_seam():
+            cur = QUALITY_PRESETS.get(int(self.quality.get()), QUALITY_PRESETS[DEFAULT_QUALITY])
+            self.advanced_params = {
+                "tile": int(var_tile.get()) if var_tile.get().strip() else int(cur["tile"]),
+                "overlap": 0.55, "conf": float(var_conf.get()) if var_conf.get().strip() else float(cur["conf"]),
+                "iou_nms": float(var_nms.get()) if var_nms.get().strip() else float(cur["iou_nms"]),
+                "use_wbf": True, "wbf_alpha": 0.35, "wbf_iou": 0.60, "wbf_auto": False,
+                "seam_iou_low": 0.40, "seam_band_factor": 0.12, "seam_weight": 0.45, "margin_weight": 0.30,
+            }
+            self.advanced_override = True; self._log("[ADV] Anti-seam preset applied."); win.destroy()
+
+        tk.Button(btns, text="Apply override", command=apply_override).pack(side="left", padx=6)
+        tk.Button(btns, text="Restore preset", command=reset_to_preset).pack(side="left", padx=6)
+        tk.Button(btns, text="Anti-seam (dedup)", command=apply_anti_seam).pack(side="left", padx=6)
+
 
 if __name__ == "__main__":
     App().mainloop()

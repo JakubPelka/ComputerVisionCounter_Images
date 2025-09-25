@@ -1,4 +1,5 @@
-# widgets.py — ScrollableFrame, AOIEditor (scale fix), ProgressCanvas (visible progress)
+# widgets.py — ScrollableFrame (z obsługą scrolla kółkiem), AOIEditor (scale fix),
+#              ProgressCanvas (z procentem – zawsze widoczny)
 from __future__ import annotations
 import tkinter as tk
 from tkinter import ttk, messagebox, simpledialog
@@ -15,7 +16,6 @@ class ScrollableFrame(tk.Frame):
         self.canvas = tk.Canvas(self, height=height, borderwidth=0, highlightthickness=0)
         self.vsb = ttk.Scrollbar(self, orient="vertical", command=self.canvas.yview)
         self.inner = tk.Frame(self.canvas)
-        # keep inner same width as canvas (so horizontal layout + vertical scroll works)
         self.inner.bind("<Configure>", lambda e: (
             self.canvas.configure(scrollregion=self.canvas.bbox("all")),
             self.canvas.itemconfigure(self._win, width=self.canvas.winfo_width())
@@ -24,6 +24,10 @@ class ScrollableFrame(tk.Frame):
         self.canvas.configure(yscrollcommand=self.vsb.set)
         self.canvas.pack(side="left", fill="both", expand=True)
         self.vsb.pack(side="right", fill="y")
+        # scroll kółkiem (Windows)
+        def _mw(e): self.canvas.yview_scroll(-1 if e.delta>0 else 1, "units")
+        self.inner.bind("<Enter>", lambda e: self.canvas.bind_all("<MouseWheel>", _mw))
+        self.inner.bind("<Leave>", lambda e: self.canvas.unbind_all("<MouseWheel>"))
 
 class ProgressCanvas(tk.Frame):
     """Always-visible progress bar drawn on Canvas (works regardless of ttk theme)."""
@@ -71,7 +75,6 @@ class AOIEditor(tk.Frame):
         self.canvas = tk.Canvas(left, width=width, height=height, bg="#222")
         self.canvas.pack(fill="both", expand=True)
         self.canvas.bind("<Button-1>", self._on_click)
-        # if image just loaded and canvas size appears, fit once
         self.canvas.bind("<Configure>", lambda e: self._maybe_fit())
 
         tk.Label(right, text="AOIs").pack(anchor="w", padx=4, pady=(4,2))
@@ -99,8 +102,7 @@ class AOIEditor(tk.Frame):
         except Exception as e:
             messagebox.showerror("AOI", f"Cannot open image:\n{e}"); return
         self._img = img
-        self._fit_pending = True  # fit as soon as canvas has a real size
-        # small delay if Configure already fired
+        self._fit_pending = True
         self.after(30, self._maybe_fit)
 
     def set_aois(self, aois):

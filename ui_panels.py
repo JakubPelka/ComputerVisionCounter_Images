@@ -1,4 +1,4 @@
-# ui_panels.py — UI builders (English), same layout; visible Progress frame
+# ui_panels.py — UI builders (English), same layout; Progress frame above log
 from __future__ import annotations
 import tkinter as tk
 from tkinter import ttk
@@ -79,13 +79,15 @@ def build_main_ui(app):
     tk.Button(act, text="Advanced options…", command=app.open_advanced).pack(side="left", padx=8)
     app.btn_abort = tk.Button(act, text="ABORT", command=app.abort, state="disabled"); app.btn_abort.pack(side="left", padx=10)
 
-    # Log + progress (dedicated frame)
-    app.log = tk.Text(frm, height=12); app.log.pack(fill="both", expand=True, pady=(6,2))
-    pf = tk.LabelFrame(frm, text="Progress"); pf.pack(fill="x", pady=4)
+    # Progress (nad logiem, zawsze widoczny)
+    pf = tk.LabelFrame(frm, text="Progress"); pf.pack(fill="x", pady=(4,2))
     app.progressbar = ttk.Progressbar(pf, maximum=100.0, variable=app.progress_var, mode="determinate")
     app.progressbar.pack(fill="x")
     ProgressCanvas(pf, app.progress_var, height=22).pack(fill="x", pady=(4,2))
     tk.Label(pf, textvariable=app.progress_label, anchor="w").pack(fill="x")
+
+    # Log (pod spodem)
+    app.log = tk.Text(frm, height=12); app.log.pack(fill="both", expand=True, pady=(6,2))
 
 def _row_browse(parent, label, var, cmd, is_dir=True):
     f = tk.Frame(parent); f.pack(fill="x", pady=3)
