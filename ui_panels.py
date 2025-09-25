@@ -1,5 +1,5 @@
-# ui_panels.py — layout & panels (English), AOI controls order,
-# Advanced button beside the Quality slider, dynamic classes grid hook.
+# ui_panels.py — layout & panels (English), AOI controls + import/export,
+# Advanced beside Quality slider, dynamic classes grid hook.
 from __future__ import annotations
 import tkinter as tk
 from tkinter import ttk
@@ -38,10 +38,11 @@ def build_main_ui(app):
 
     # ========== AOI ==========
     aoi = tk.LabelFrame(root, text="Areas of Interest (AOI)"); aoi.pack(fill="x", pady=(0,6))
-    # Order requested: Require AOI first, then Use AOI
     tk.Checkbutton(aoi, text="Require AOI for every image", variable=app.require_aoi_all).pack(anchor="w")
     tk.Checkbutton(aoi, text="Use AOI (draw polygons — finish with Ctrl+Enter, undo vertex: Ctrl+Backspace)",
                    variable=app.use_aoi, command=app._on_toggle_use_aoi).pack(anchor="w")
+
+    # AOI mode row
     m = tk.Frame(aoi); m.pack(fill="x", pady=(4,2))
     tk.Label(m, text="Count within AOI by:").pack(side="left")
     tk.Radiobutton(m, text="Centroid inside polygon", variable=app.aoi_mode, value="centroid").pack(side="left", padx=8)
@@ -49,6 +50,12 @@ def build_main_ui(app):
     tk.Label(m, text="min box fraction inside AOI:").pack(side="left", padx=(12,2))
     tk.Spinbox(m, from_=0.05, to=1.0, increment=0.05, width=5,
                textvariable=app.aoi_box_frac).pack(side="left")
+
+    # AOI actions row
+    act = tk.Frame(aoi); act.pack(fill="x", pady=(4,2))
+    tk.Button(act, text="Open AOI editor…", command=app._open_aoi_editor).pack(side="left")
+    tk.Button(act, text="Import AOIs", command=app.import_aois_from_input).pack(side="left", padx=6)
+    tk.Button(act, text="Export AOIs", command=app.export_aois_now).pack(side="left")
 
     # ========== Visualization ==========
     vis = tk.LabelFrame(root, text="Visualization"); vis.pack(fill="x", pady=(0,6))
@@ -59,9 +66,9 @@ def build_main_ui(app):
     tk.Checkbutton(vis, text="Draw centroid dot", variable=app.draw_centroid).pack(side="left", padx=(12,0))
     tk.Checkbutton(vis, text="Save annotated images", variable=app.annotate).pack(side="left", padx=(12,0))
 
-    # ========== Classes (dynamic grid; scrollbar auto-hides when not needed) ==========
+    # ========== Classes (shorter height; scrollbar auto-hides) ==========
     cl = tk.LabelFrame(root, text="Classes (load weights to populate)"); cl.pack(fill="both", expand=True, pady=(0,6))
-    app.classes_scroll = ScrollableFrame(cl, height=220)
+    app.classes_scroll = ScrollableFrame(cl, height=120)  # ~half height
     app.classes_scroll.pack(fill="both", expand=True)
     app.classes_container = app.classes_scroll.inner
     app.classes_scroll.canvas.bind("<Configure>", lambda e: app._on_classes_canvas_config(e.width))

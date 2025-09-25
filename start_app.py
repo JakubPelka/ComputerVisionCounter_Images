@@ -1,4 +1,4 @@
-# start_app.py — dynamic class grid keeps original class IDs; rest unchanged
+# start_app.py — add Import/Export AOIs & re-use existing JSONs; unchanged core flow
 from __future__ import annotations
 import sys, json, time, threading
 from pathlib import Path
@@ -95,8 +95,8 @@ class App(tk.Tk):
         self.draw_centroid = tk.BooleanVar(value=False)
 
         # classes
-        self.class_names: dict[int,str] = {}                # id -> name
-        self.class_vars: list[tuple[str, tk.BooleanVar, int]] = []  # (name, var, class_id)
+        self.class_names: dict[int,str] = {}
+        self.class_vars: list[tuple[str, tk.BooleanVar, int]] = []
         self._class_cols = 4
         self.classes_scroll: ScrollableFrame | None = None
         self.classes_container = None
@@ -175,7 +175,7 @@ class App(tk.Tk):
         except Exception as e:
             self._log(f"[WARN] Could not read classes from engine: {e}")
 
-    # ---------- AOI toggle ----------
+    # ---------- AOI helpers / UI actions ----------
     def _on_toggle_use_aoi(self):
         try:
             if self.use_aoi.get():
@@ -183,7 +183,6 @@ class App(tk.Tk):
         except Exception as e:
             self._log(f"[AOI] toggle error: {e}")
 
-    # ---------- AOI editor ----------
     def _open_aoi_editor(self):
         imgs = self._resolve_inputs()
         if not imgs:
@@ -225,7 +224,74 @@ class App(tk.Tk):
             top.destroy()
 
         top.protocol("WM_DELETE_WINDOW", on_close)
-        load_idx(0)
+        load_idx(0)  # shows image immediately
+
+    def import_aois_from_input(self):
+        """Load AOIs from <input>/aoi/*.json and attach to current images; auto-enables Use AOI."""
+        imgs = self._resolve_inputs()
+        if not imgs:
+            messagebox.showinfo("AOI", "Select input images first."); return
+        root = imgs[0].parent if self.selected_files else Path(self.input_dir.get().strip())
+        folder = root / "aoi"
+        if not folder.exists():
+            messagebox.showwarning("AOI", f"No 'aoi' folder found under:\n{root}"); return
+
+        by_name = {p.name: p for p in imgs}
+        loaded = 0
+        for jf in sorted(folder.glob("*.json")):
+            try:
+                data = json.loads(Path(jf).read_text(encoding="utf-8"))
+                img_name = data.get("image")
+                aois_raw = data.get("aois", [])
+                aois = []
+                for a in aois_raw:
+                    pts = a.get("polygon", a.get("pts", []))
+                    aois.append({"name": a.get("name","AOI"), "polygon": [[float(x),float(y)] for x,y in pts]})
+                if img_name in by_name and aois:
+                    self.aoi_map[str(by_name[img_name])] = aois
+                    loaded += 1
+            except Exception as e:
+                self._log(f"[AOI] import failed for {jf}: {e}")
+        self.use_aoi.set(True)
+        self._log(f"[AOI] Imported AOIs for {loaded} images from {folder}")
+        messagebox.showinfo("AOI", f"Imported AOIs for {loaded} images.")
+
+    def export_aois_now(self):
+        """Write current AOIs to <input>/aoi & aoi_masks immediately."""
+        imgs = self._resolve_inputs()
+        if not imgs:
+            messagebox.showinfo("AOI", "Select input images first."); return
+        count = self._export_aois_to_input(imgs, force=True)
+        messagebox.showinfo("AOI", f"Exported AOIs for {count} images.")
+
+    def _export_aois_to_input(self, imgs, force=False):
+        """Persist AOIs JSON + union masks next to input images. Returns number saved."""
+        if not (force or self.use_aoi.get()): return 0
+        if not self.aoi_map: return 0
+        if cv2 is None: 
+            self._log("[AOI] OpenCV not available; skipping mask export.")
+            # still export JSON
+        root = imgs[0].parent if self.selected_files else Path(self.input_dir.get().strip())
+        (root / "aoi").mkdir(parents=True, exist_ok=True)
+        if cv2 is not None:
+            (root / "aoi_masks").mkdir(parents=True, exist_ok=True)
+
+        saved = 0
+        for p in imgs:
+            aois = self.aoi_map.get(str(p), [])
+            if not aois: continue
+            with open(root/"aoi"/f"{p.stem}.json","w",encoding="utf-8") as f:
+                json.dump({"image": p.name, "aois": aois}, f, ensure_ascii=False, indent=2)
+            if cv2 is not None:
+                im = cv2.imread(str(p))
+                if im is not None:
+                    h,w = im.shape[:2]
+                    m = build_union_mask(h,w,aois)
+                    if m is not None:
+                        cv2.imwrite(str(root/"aoi_masks"/f"{p.stem}.png"), m)
+            saved += 1
+        self._log(f"[AOI] Persisted to INPUT/aoi & aoi_masks ({saved} images)")
+        return saved
 
     # ---------- UI helpers ----------
     def _update_preset_label(self):
@@ -247,22 +313,17 @@ class App(tk.Tk):
             return
         container = self.classes_container
 
-        # remember previously selected IDs
         prev = set(cid for (_nm, var, cid) in self.class_vars if var.get())
-
-        # clear UI
         for w in container.winfo_children():
             try: w.destroy()
             except Exception: pass
         self.class_vars.clear()
 
-        # normalize into list of (class_id, name)
         if isinstance(id2name, dict):
             pairs = [(cid, nm) for cid, nm in sorted(id2name.items(), key=lambda kv: kv[0])]
         else:
             pairs = list(enumerate(id2name))
 
-        # compute columns based on available width
         try:
             avail = max(320, int(self.classes_scroll.canvas.winfo_width()))
         except Exception:
@@ -274,7 +335,6 @@ class App(tk.Tk):
         for c in range(cols):
             container.grid_columnconfigure(c, minsize=col_w, weight=1, uniform="classes")
 
-        # build cells
         for idx, (cid, nm) in enumerate(pairs):
             var = tk.BooleanVar(value=(cid in prev))
             r, c = divmod(idx, cols)
@@ -350,7 +410,6 @@ class App(tk.Tk):
         if not model:
             messagebox.showerror("Model", "Select a valid weights file (.pt or .onnx)."); return
 
-        # require at least one class if names are available
         if self.class_names and not self._selected_classes():
             messagebox.showwarning("Classes", "Select at least one class."); return
 
@@ -373,28 +432,10 @@ class App(tk.Tk):
                 base["wbf_iou"] = auto_wbf_iou(int(self.quality.get()), base["iou_nms"])
 
         # Persist AOIs to input (always if any)
-        if self.use_aoi.get() and self.aoi_map and cv2 is not None:
-            imgs_root = imgs[0].parent if self.selected_files else Path(self.input_dir.get().strip())
-            (imgs_root / "aoi").mkdir(parents=True, exist_ok=True)
-            (imgs_root / "aoi_masks").mkdir(parents=True, exist_ok=True)
-            for p in imgs:
-                aois = self.aoi_map.get(str(p), [])
-                if not aois: continue
-                with open(imgs_root/"aoi"/f"{p.stem}.json","w",encoding="utf-8") as f:
-                    json.dump({"image": Path(p).name, "aois": aois}, f, ensure_ascii=False, indent=2)
-                if cv2 is not None:
-                    im = cv2.imread(str(p))
-                    if im is not None:
-                        h,w = im.shape[:2]
-                        m = build_union_mask(h,w,aois)
-                        if m is not None:
-                            cv2.imwrite(str(imgs_root/"aoi_masks"/f"{p.stem}.png"), m)
-            self._log("[AOI] Persisted to INPUT/aoi & aoi_masks")
+        self._export_aois_to_input(imgs, force=False)
 
-        # choose path
         use_legacy_pt = (self.engine_var.get() in ("auto","pt") and model.lower().endswith(".pt"))
 
-        # arm UI
         self.btn_start.config(state="disabled"); self.btn_abort.config(state="normal")
         self._stop = False; self.progress_var.set(0.0); self.update_idletasks()
 

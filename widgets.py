@@ -1,4 +1,5 @@
-# widgets.py — ScrollableFrame (auto-hide vscroll) + AOIEditor (Ctrl+Enter/Backspace)
+# widgets.py — ScrollableFrame (auto-hide vscroll) + AOIEditor
+# Fix: image visible on first open; center name dialog; Ctrl+Enter/Ctrl+Backspace.
 from __future__ import annotations
 import tkinter as tk
 from tkinter import ttk
@@ -60,6 +61,8 @@ class AOIEditor(tk.Frame):
         self.scale = 1.0
         self._tk_img = None
         self._img_node = None
+        self._first_fit_done = False
+        self._needs_refit = False
 
         self.canvas = tk.Canvas(self, bg="#222"); self.canvas.pack(fill="both", expand=True)
         tk.Label(self, text="Finish: Ctrl+Enter   •   Undo vertex: Ctrl+Backspace",
@@ -69,13 +72,17 @@ class AOIEditor(tk.Frame):
         self.bind_all("<Control-Return>", self._on_finish, add="+")
         self.bind_all("<Control-BackSpace>", self._on_undo, add="+")
 
+        # Refit when the widget gets a real size (fixes first-open blank)
+        self.bind("<Configure>", self._on_configure, add="+")
+
     # public API
     def load_image(self, path: str):
         bgr = cv2.imread(path)
         if bgr is None:
             bgr = np.zeros((720,1280,3), np.uint8)
         self.img_bgr = bgr
-        self._fit_base()
+        self._first_fit_done = False
+        self._fit_base()           # try once
         self.cur_pts.clear()
         self._redraw()
 
@@ -94,13 +101,29 @@ class AOIEditor(tk.Frame):
         return [{"name": a["name"], "polygon": [list(p) for p in a["pts"]]} for a in self.polys]
 
     # internals
+    def _on_configure(self, _evt=None):
+        if self.img_bgr is not None and not self._first_fit_done:
+            self._fit_base(); self._redraw(); self._first_fit_done = True
+        elif self._needs_refit:
+            self._fit_base(); self._redraw(); self._needs_refit = False
+
     def _fit_base(self):
+        if self.img_bgr is None:
+            return
         H,W = self.img_bgr.shape[:2]
-        cw = max(1, self.winfo_width() or 1280)
-        ch = max(1, self.winfo_height() or 820)
+
+        # Try actual allocated size; if too small, fallback and refit later.
+        self.update_idletasks()
+        cw = self.winfo_width()
+        ch = self.winfo_height()
+        if cw < 100 or ch < 100:
+            # Fallback size; mark that we should refit once we get a real size
+            cw, ch = 1280, 820
+            self._needs_refit = True
+
         s = min(1.0, cw/float(W), ch/float(H))
         self.scale = s
-        disp = cv2.resize(self.img_bgr, (int(W*s), int(H*s)))
+        disp = cv2.resize(self.img_bgr, (max(1,int(W*s)), max(1,int(H*s))))
         rgb = cv2.cvtColor(disp, cv2.COLOR_BGR2RGB)
         self._tk_img = ImageTk.PhotoImage(Image.fromarray(rgb))
         if self._img_node is None:
@@ -116,16 +139,16 @@ class AOIEditor(tk.Frame):
         xi, yi = self._disp_to_img(e.x, e.y)
         if len(self.cur_pts) < 30:
             self.cur_pts.append([xi, yi])
-            self._redraw()
+            self._redraw(); self._notify()
 
     def _on_undo(self, _=None):
         if self.cur_pts:
-            self.cur_pts.pop(); self._redraw()
+            self.cur_pts.pop(); self._redraw(); self._notify()
 
     def _on_finish(self, _=None):
         if len(self.cur_pts) < 3: return
         self._ask_name_and_add(self.cur_pts[:])
-        self.cur_pts.clear(); self._redraw()
+        self.cur_pts.clear(); self._redraw(); self._notify()
 
     def _ask_name_and_add(self, pts):
         win = tk.Toplevel(self); win.title("AOI name")
@@ -156,7 +179,6 @@ class AOIEditor(tk.Frame):
         self.wait_window(win)
         if out["name"]:
             self.polys.append({"name": out["name"], "pts": [list(p) for p in pts]})
-            self._notify()
 
     def _notify(self):
         if callable(self.on_change):
