@@ -1,195 +1,183 @@
-# widgets.py — ScrollableFrame (z obsługą scrolla kółkiem), AOIEditor (scale fix),
-#              ProgressCanvas (z procentem – zawsze widoczny)
+# widgets.py — ScrollableFrame (auto-hide vscroll) + AOIEditor (Ctrl+Enter/Backspace)
 from __future__ import annotations
 import tkinter as tk
-from tkinter import ttk, messagebox, simpledialog
-
-try:
-    from PIL import Image, ImageTk
-except Exception:
-    Image = None
-    ImageTk = None
+from tkinter import ttk
+from PIL import Image, ImageTk
+import cv2, numpy as np
 
 class ScrollableFrame(tk.Frame):
-    def __init__(self, parent, height=180, *args, **kwargs):
-        super().__init__(parent, *args, **kwargs)
-        self.canvas = tk.Canvas(self, height=height, borderwidth=0, highlightthickness=0)
-        self.vsb = ttk.Scrollbar(self, orient="vertical", command=self.canvas.yview)
-        self.inner = tk.Frame(self.canvas)
-        self.inner.bind("<Configure>", lambda e: (
-            self.canvas.configure(scrollregion=self.canvas.bbox("all")),
-            self.canvas.itemconfigure(self._win, width=self.canvas.winfo_width())
-        ))
-        self._win = self.canvas.create_window((0, 0), window=self.inner, anchor="nw")
-        self.canvas.configure(yscrollcommand=self.vsb.set)
+    """Canvas + inner frame; vertical scrollbar auto-hides when content fits."""
+    def __init__(self, parent, height=260):
+        super().__init__(parent)
+        self.canvas = tk.Canvas(self, borderwidth=0, highlightthickness=0, height=height)
+        self.vbar = ttk.Scrollbar(self, orient="vertical", command=self.canvas.yview)
+        self.canvas.configure(yscrollcommand=self.vbar.set)
         self.canvas.pack(side="left", fill="both", expand=True)
-        self.vsb.pack(side="right", fill="y")
-        # scroll kółkiem (Windows)
-        def _mw(e): self.canvas.yview_scroll(-1 if e.delta>0 else 1, "units")
-        self.inner.bind("<Enter>", lambda e: self.canvas.bind_all("<MouseWheel>", _mw))
-        self.inner.bind("<Leave>", lambda e: self.canvas.unbind_all("<MouseWheel>"))
+        self.vbar.pack(side="right", fill="y")
+        self._vbar_visible = True
 
-class ProgressCanvas(tk.Frame):
-    """Always-visible progress bar drawn on Canvas (works regardless of ttk theme)."""
-    def __init__(self, parent, var: tk.DoubleVar, height=22, *args, **kwargs):
-        super().__init__(parent, *args, **kwargs)
-        self.var = var
-        self.canvas = tk.Canvas(self, height=height, bg="#f0f0f0",
-                                highlightthickness=1, highlightbackground="#888")
-        self.canvas.pack(fill="x", expand=True)
-        self.canvas.bind("<Configure>", lambda e: self._redraw())
-        var.trace_add("write", lambda *_: self._redraw())
-        self._redraw()
+        self.inner = tk.Frame(self.canvas)
+        self.win = self.canvas.create_window((0, 0), window=self.inner, anchor="nw")
 
-    def _redraw(self):
-        self.canvas.delete("bar")
-        w = max(1, int(self.canvas.winfo_width()))
-        h = max(4, int(self.canvas.winfo_height()))
-        pct_val = max(0.0, min(100.0, float(self.var.get() or 0.0)))
-        pct = pct_val / 100.0
-        self.canvas.create_rectangle(1, 1, int(pct*(w-2)), h-1, fill="#3a86ff", outline="#3a86ff", tags="bar")
-        self.canvas.create_text(w-40, h//2, text=f"{pct_val:5.1f}%", anchor="c", fill="#222", tags="bar")
+        def _on_inner_config(_):
+            self.canvas.configure(scrollregion=self.canvas.bbox("all")); self._update_scrollbar()
+        def _on_canvas_config(e):
+            self.canvas.itemconfig(self.win, width=e.width); self._update_scrollbar()
+        self.inner.bind("<Configure>", _on_inner_config)
+        self.canvas.bind("<Configure>", _on_canvas_config)
+
+        def _mw(e): self.canvas.yview_scroll(int(-e.delta/120), "units")
+        self.inner.bind("<Enter>", lambda _e: self.canvas.bind_all("<MouseWheel>", _mw))
+        self.inner.bind("<Leave>", lambda _e: self.canvas.unbind_all("<MouseWheel>"))
+
+    def _update_scrollbar(self):
+        try:
+            bbox = self.canvas.bbox("all")
+            content_h = (bbox[3]-bbox[1]) if bbox else 0
+            canvas_h = int(self.canvas.winfo_height())
+            need = content_h > canvas_h + 2
+        except Exception:
+            need = False
+        if need and not self._vbar_visible:
+            self.vbar.pack(side="right", fill="y"); self._vbar_visible = True
+        elif not need and self._vbar_visible:
+            self.vbar.pack_forget(); self._vbar_visible = False
+
 
 class AOIEditor(tk.Frame):
+    """Polygon editor:
+       • Click to add vertices (max 30)
+       • Ctrl+Enter = finish & name
+       • Ctrl+Backspace = undo last vertex
+       get_aois() returns [{'name': ..., 'polygon': [[x,y],...]}].
     """
-    Polygon AOI editor (multi-AOI with names).
-    API:
-      - load_image(path), set_aois(list[{name, polygon}]), get_aois()
-      - Enter: finish polygon & name
-      - Backspace: undo last vertex
-    """
-    def __init__(self, parent, width=900, height=650, *args, **kwargs):
-        super().__init__(parent, *args, **kwargs)
-        self._img = None
-        self._img_tk = None
-        self._scale = 1.0
-        self._offset = (0, 0)
-        self._aois = []
-        self._current = []
-        self._selected_idx = None
-        self._fit_pending = False  # scale-fix
+    def __init__(self, parent, on_change=None):
+        super().__init__(parent)
+        self.on_change = on_change
+        self.cur_pts = []
+        self.polys = []  # [{'name': str, 'pts': [[x,y],...]}]
+        self.img_bgr = None
+        self.scale = 1.0
+        self._tk_img = None
+        self._img_node = None
 
-        left = tk.Frame(self); left.pack(side="left", fill="both", expand=True)
-        right = tk.Frame(self); right.pack(side="right", fill="y")
+        self.canvas = tk.Canvas(self, bg="#222"); self.canvas.pack(fill="both", expand=True)
+        tk.Label(self, text="Finish: Ctrl+Enter   •   Undo vertex: Ctrl+Backspace",
+                 fg="#666").pack(fill="x", pady=(4,0))
 
-        self.canvas = tk.Canvas(left, width=width, height=height, bg="#222")
-        self.canvas.pack(fill="both", expand=True)
         self.canvas.bind("<Button-1>", self._on_click)
-        self.canvas.bind("<Configure>", lambda e: self._maybe_fit())
+        self.bind_all("<Control-Return>", self._on_finish, add="+")
+        self.bind_all("<Control-BackSpace>", self._on_undo, add="+")
 
-        tk.Label(right, text="AOIs").pack(anchor="w", padx=4, pady=(4,2))
-        self.listbox = tk.Listbox(right, height=18); self.listbox.pack(fill="y", padx=4, pady=(0,6))
-        self.listbox.bind("<<ListboxSelect>>", lambda e: self._on_select())
-
-        b = tk.Frame(right); b.pack(fill="x", padx=4)
-        tk.Button(b, text="New", command=self.start_new_aoi).pack(fill="x", pady=2)
-        tk.Button(b, text="Delete selected", command=self.delete_selected_aoi).pack(fill="x", pady=2)
-        tk.Button(b, text="Clear all", command=self.clear_all).pack(fill="x", pady=2)
-
-        tip = "Click to add vertices. Backspace = undo last. Enter = finish polygon + name it."
-        tk.Label(right, text=tip, wraplength=220, fg="#666").pack(anchor="w", padx=4, pady=(8,2))
-
-        self.canvas.bind_all("<Return>", self._finish_polygon)
-        self.canvas.bind_all("<BackSpace>", self._undo)
-
-    # --- public API ---
+    # public API
     def load_image(self, path: str):
-        if Image is None:
-            messagebox.showerror("AOI", "Pillow (PIL) is required for AOI editor."); return
-        from PIL import Image as _Image, ImageTk as _ImageTk
-        try:
-            img = _Image.open(path).convert("RGB")
-        except Exception as e:
-            messagebox.showerror("AOI", f"Cannot open image:\n{e}"); return
-        self._img = img
-        self._fit_pending = True
-        self.after(30, self._maybe_fit)
+        bgr = cv2.imread(path)
+        if bgr is None:
+            bgr = np.zeros((720,1280,3), np.uint8)
+        self.img_bgr = bgr
+        self._fit_base()
+        self.cur_pts.clear()
+        self._redraw()
 
     def set_aois(self, aois):
-        self._aois = []
+        # accept both 'polygon' and legacy 'pts'
+        self.polys = []
         for a in (aois or []):
-            poly = [(float(x), float(y)) for x,y in a.get("polygon", [])]
-            self._aois.append({"name": str(a.get("name","AOI")), "polygon": poly})
-        self._refresh_list(); self._redraw()
+            name = a.get("name","AOI")
+            pts = a.get("polygon", a.get("pts", []))
+            self.polys.append({"name": name, "pts": [[float(x),float(y)] for x,y in pts]})
+        self.cur_pts.clear()
+        self._redraw(); self._notify()
 
     def get_aois(self):
-        return [{"name": a["name"], "polygon": list(a["polygon"])} for a in self._aois]
+        # return with 'polygon' key (compatible with counting & masks)
+        return [{"name": a["name"], "polygon": [list(p) for p in a["pts"]]} for a in self.polys]
 
-    def start_new_aoi(self): self._current = []; self._redraw()
-    def delete_selected_aoi(self):
-        if self._selected_idx is not None and 0 <= self._selected_idx < len(self._aois):
-            del self._aois[self._selected_idx]; self._selected_idx = None; self._refresh_list(); self._redraw()
-    def clear_all(self): self._aois = []; self._current = []; self._selected_idx = None; self._refresh_list(); self._redraw()
+    # internals
+    def _fit_base(self):
+        H,W = self.img_bgr.shape[:2]
+        cw = max(1, self.winfo_width() or 1280)
+        ch = max(1, self.winfo_height() or 820)
+        s = min(1.0, cw/float(W), ch/float(H))
+        self.scale = s
+        disp = cv2.resize(self.img_bgr, (int(W*s), int(H*s)))
+        rgb = cv2.cvtColor(disp, cv2.COLOR_BGR2RGB)
+        self._tk_img = ImageTk.PhotoImage(Image.fromarray(rgb))
+        if self._img_node is None:
+            self._img_node = self.canvas.create_image(0,0,anchor="nw",image=self._tk_img)
+        else:
+            self.canvas.itemconfigure(self._img_node, image=self._tk_img)
+        self.canvas.config(width=disp.shape[1], height=disp.shape[0])
 
-    # --- internals ---
-    def _maybe_fit(self):
-        if self._img is None or not self._fit_pending: return
-        cw = int(self.canvas.winfo_width() or 0); ch = int(self.canvas.winfo_height() or 0)
-        if cw <= 2 or ch <= 2: return
-        self._fit(); self._fit_pending = False; self._current=[]; self._selected_idx=None; self._redraw()
-
-    def _fit(self):
-        if not self._img: return
-        cw = max(1, int(self.canvas.winfo_width() or self.canvas.cget("width")))
-        ch = max(1, int(self.canvas.winfo_height() or self.canvas.cget("height")))
-        iw, ih = self._img.size
-        s = max(0.01, min(4.0, min(cw/iw, ch/ih)))
-        self._scale = s
-        nw, nh = int(iw*s), int(ih*s)
-        self._img_tk = ImageTk.PhotoImage(self._img.resize((nw, nh)))
-        self._offset = ((cw - nw)//2, (ch - nh)//2)
-
-    def _img_to_canvas(self, x, y):
-        ox, oy = self._offset
-        return ox + x*self._scale, oy + y*self._scale
-
-    def _canvas_to_img(self, x, y):
-        ox, oy = self._offset
-        return (x-ox)/self._scale, (y-oy)/self._scale
-
-    def _refresh_list(self):
-        self.listbox.delete(0, "end")
-        for i, a in enumerate(self._aois):
-            self.listbox.insert("end", f"{i+1}. {a['name']} ({len(a['polygon'])} pts)")
-
-    def _on_select(self):
-        sel = self.listbox.curselection()
-        self._selected_idx = (int(sel[0]) if sel else None)
-        self._redraw()
+    def _img_to_disp(self, x, y): return [x*self.scale, y*self.scale]
+    def _disp_to_img(self, x, y): return [x/self.scale, y/self.scale]
 
     def _on_click(self, e):
-        if not self._img: return
-        x, y = self._canvas_to_img(e.x, e.y)
-        self._current.append((x,y))
-        self._redraw()
+        xi, yi = self._disp_to_img(e.x, e.y)
+        if len(self.cur_pts) < 30:
+            self.cur_pts.append([xi, yi])
+            self._redraw()
 
-    def _undo(self, _=None):
-        if self._current: self._current.pop(); self._redraw()
+    def _on_undo(self, _=None):
+        if self.cur_pts:
+            self.cur_pts.pop(); self._redraw()
 
-    def _finish_polygon(self, _=None):
-        if len(self._current) < 3: return
-        name = simpledialog.askstring("AOI name", "Enter AOI name:", parent=self) or f"AOI {len(self._aois)+1}"
-        self._aois.append({"name": name, "polygon": list(self._current)})
-        self._current = []; self._selected_idx = len(self._aois)-1
-        self._refresh_list(); self._redraw()
+    def _on_finish(self, _=None):
+        if len(self.cur_pts) < 3: return
+        self._ask_name_and_add(self.cur_pts[:])
+        self.cur_pts.clear(); self._redraw()
 
-    def _draw_polygon(self, poly, color="#00ff88", width=2, dash=None):
-        if len(poly) < 2: return
-        pts = []
-        for x,y in poly:
-            cx, cy = self._img_to_canvas(x,y); pts.extend([cx,cy])
-        self.canvas.create_polygon(pts, outline=color, width=width, dash=dash, fill="", tags="overlay")
-        for x,y in poly:
-            cx, cy = self._img_to_canvas(x,y)
-            self.canvas.create_oval(cx-3, cy-3, cx+3, cy+3, fill=color, outline="", tags="overlay")
+    def _ask_name_and_add(self, pts):
+        win = tk.Toplevel(self); win.title("AOI name")
+        win.transient(self); win.grab_set(); win.lift()
+
+        var = tk.StringVar(value=f"AOI {len(self.polys)+1}")
+        tk.Label(win, text="Zone name:").pack(padx=10, pady=(10,4), anchor="w")
+        ent = tk.Entry(win, textvariable=var, width=28); ent.pack(padx=10, pady=(0,10))
+        ent.focus_set()
+        ent.bind("<Return>", lambda e: ok())
+
+        btns = tk.Frame(win); btns.pack(padx=10, pady=(0,10), fill="x")
+        tk.Button(btns, text="OK", command=lambda: ok()).pack(side="right")
+
+        # center dialog over the editor
+        win.update_idletasks()
+        ww, wh = win.winfo_width(), win.winfo_height()
+        px, py = self.winfo_rootx(), self.winfo_rooty()
+        pw, ph = self.winfo_width(), self.winfo_height()
+        x = px + max(0, (pw - ww)//2); y = py + max(0, (ph - wh)//2)
+        win.geometry(f"+{x}+{y}")
+
+        out = {"name": None}
+        def ok():
+            out["name"] = var.get().strip() or f"AOI {len(self.polys)+1}"
+            win.destroy()
+
+        self.wait_window(win)
+        if out["name"]:
+            self.polys.append({"name": out["name"], "pts": [list(p) for p in pts]})
+            self._notify()
+
+    def _notify(self):
+        if callable(self.on_change):
+            try: self.on_change(self.get_aois())
+            except Exception: pass
 
     def _redraw(self):
-        self.canvas.delete("all")
-        if self._img_tk:
-            ox, oy = self._offset
-            self.canvas.create_image(ox, oy, image=self._img_tk, anchor="nw")
-        for i,a in enumerate(self._aois):
-            sel = (i == self._selected_idx)
-            self._draw_polygon(a["polygon"], "#00e0ff" if sel else "#00ff88", 3 if sel else 2)
-        if self._current:
-            self._draw_polygon(self._current, "#ffcc00", 2, dash=(3,2))
+        self.canvas.delete("overlay")
+        if self._tk_img is not None:
+            self.canvas.create_image(0,0,anchor="nw",image=self._tk_img, tags="overlay_base")
+        # existing polygons
+        for a in self.polys:
+            pts = [self._img_to_disp(x,y) for x,y in a["pts"]]
+            if len(pts) >= 3:
+                for i in range(len(pts)):
+                    x1,y1 = pts[i]; x2,y2 = pts[(i+1)%len(pts)]
+                    self.canvas.create_line(x1,y1,x2,y2, fill="#FFB000", width=2, tags="overlay")
+        # current sketch
+        for i, p in enumerate(self.cur_pts):
+            x,y = self._img_to_disp(p[0], p[1])
+            self.canvas.create_oval(x-3,y-3,x+3,y+3, fill="yellow", outline="", tags="overlay")
+            if i>0:
+                px,py = self._img_to_disp(self.cur_pts[i-1][0], self.cur_pts[i-1][1])
+                self.canvas.create_line(px,py,x,y, fill="yellow", width=2, tags="overlay")
