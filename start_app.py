@@ -49,7 +49,6 @@ BUILTIN_PRESETS = {
 DEFAULT_QUALITY_NAME = "Ultra"
 
 def _quality_to_name_snapped(qvalue: float) -> tuple[int, str]:
-    """Snap any slider value to {1,2,3} and return (snapped, name)."""
     v = float(qvalue)
     snap = 1 if v < 1.5 else 2 if v < 2.5 else 3
     name = "Fast" if snap == 1 else "Balanced" if snap == 2 else "Ultra"
@@ -71,9 +70,9 @@ class App(tk.Tk):
         self.minsize(900, 700)
 
         # selections
-        self.input_dir = tk.StringVar(value="")
-        self.output_dir = tk.StringVar(value="")
-        self.weights_path = tk.StringVar(value="")
+        self.input_dir = tk.StringVar(value="")     # no prefill
+        self.output_dir = tk.StringVar(value="")    # will default to ./output
+        self.weights_path = tk.StringVar(value="")  # no prefill
         self.selected_files: list[Path] = []
 
         # hidden engine/device controls (auto)
@@ -116,8 +115,8 @@ class App(tk.Tk):
         self._logfile: Path | None = None
         self._worker: threading.Thread | None = None
 
-        # ---- auto-prefill paths if repo-style folders exist
-        self._prefill_paths_from_repo()
+        # ---- only set default OUTPUT to ./output (no prefill for input/weights)
+        self._prefill_only_output()
 
         # build UI
         ui_panels.build_main_ui(self)
@@ -129,34 +128,20 @@ class App(tk.Tk):
         self._update_preset_label()
         self._log("Ready.")
 
-    # ---------- auto-prefill helpers ----------
-    def _prefill_paths_from_repo(self):
+    # ---------- only-output prefill ----------
+    def _prefill_only_output(self):
         base = Path(__file__).parent.resolve()
-
-        # Input
-        cand_input = base / "input"
-        if cand_input.exists() and cand_input.is_dir():
-            self.input_dir.set(str(cand_input))
-
-        # Output
-        cand_out = base / "results"
+        cand_out = base / "output"
         try:
             cand_out.mkdir(exist_ok=True)
         except Exception:
             pass
         self.output_dir.set(str(cand_out))
-
-        # Weights — prefer first .pt/.onnx inside ./weights; if none, set to that folder (so the dialog opens there)
-        cand_w = base / "weights"
-        if cand_w.exists() and cand_w.is_dir():
-            models = sorted([p for p in cand_w.iterdir() if p.suffix.lower() in (".pt",".onnx")])
-            if models:
-                self.weights_path.set(str(models[0]))
-            else:
-                self.weights_path.set(str(cand_w))
+        # DO NOT touch input_dir / weights_path
 
     # ---------- file pickers ----------
     def browse_input(self):
+        # Start in ./input or current value; do not auto-set beforehand
         start = self.input_dir.get().strip() or str((Path(__file__).parent / "input").resolve())
         d = filedialog.askdirectory(title="Select input folder with images", initialdir=start)
         if not d: return
@@ -195,13 +180,14 @@ class App(tk.Tk):
             pass
 
     def browse_output(self):
-        start = self.output_dir.get().strip() or str((Path(__file__).parent / "results").resolve())
+        # Start in ./output or current value
+        start = self.output_dir.get().strip() or str((Path(__file__).parent / "output").resolve())
         d = filedialog.askdirectory(title="Select output folder", initialdir=start)
         if d: self.output_dir.set(d)
 
     def browse_weights(self):
+        # Start in ./weights (or current weights folder), but do NOT auto-select a file
         cur = self.weights_path.get().strip()
-        start_dir = None
         if cur:
             p = Path(cur)
             start_dir = p.parent if p.exists() else (Path(__file__).parent / "weights")
@@ -526,8 +512,9 @@ class App(tk.Tk):
             if missing:
                 messagebox.showwarning("AOI", f"AOI missing for {len(missing)} images."); return
 
+        # outdir: prefer user field; otherwise fall back to ./output (not ./results)
         outdir = Path(self.output_dir.get().strip()) if self.output_dir.get().strip() else (
-            (imgs[0].parent if self.selected_files else Path(self.input_dir.get().strip())) / "results"
+            Path(__file__).parent.resolve() / "output"
         )
         self._set_logfile(outdir)
         self._log(f"Output → {outdir}")
@@ -618,7 +605,6 @@ class App(tk.Tk):
 
     # ---------- class toggles ----------
     def select_all_classes(self, state: bool = True):
-        """Turn ON/OFF all class checkboxes."""
         for (_nm, var, _cid) in self.class_vars:
             try:
                 var.set(bool(state))
@@ -626,7 +612,6 @@ class App(tk.Tk):
                 pass
 
     def invert_classes(self):
-        """Invert current class selections."""
         for (_nm, var, _cid) in self.class_vars:
             try:
                 var.set(not bool(var.get()))
@@ -681,12 +666,12 @@ class App(tk.Tk):
         self._maybe_export_geojson(imgs, outdir, dets_map)
         return totals
 
-    # ---------- GeoJSON helper ----------
+    # ---------- Geo export helper ----------
     def _maybe_export_geojson(self, imgs, outdir: Path, dets_map):
         if export_geojson_for_image is None:
-            self._log("[GEO] geo_export.py not found — skipping GeoJSON."); return
+            self._log("[GEO] geo_export.py not found — skipping Geo export."); return
         if not dets_map:
-            self._log("[GEO] No detection details provided by engine — skipping GeoJSON."); return
+            self._log("[GEO] No detection details provided by engine — skipping Geo export."); return
         for p in imgs:
             try:
                 dets = self._normalize_dets(dets_map.get(str(p)) or dets_map.get(p) or [])
