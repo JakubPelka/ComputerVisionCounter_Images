@@ -1,6 +1,7 @@
-# legacy_pt_runner.py — legacy PyTorch tiling path; per-tile progress; boxes_conf shows class+conf; centroid dots; optional dets_map for GeoJSON.
+# legacy_pt_runner.py — legacy PyTorch tiling path; per-tile progress; boxes_conf shows class+conf; centroid dots; GIS CSV; detections_full.csv
 from __future__ import annotations
-import time, json
+from geo_export import export_geojson_for_image
+import csv, json, time
 from pathlib import Path
 
 try:
@@ -87,30 +88,23 @@ def run_legacy_pt(
     tile: int, overlap: float, conf: float, iou: float,
     selected_classes, overlay_mode: str, draw_centroid: bool,
     aoi_mode: str, aoi_box_frac: float, aoi_map: dict,
-    progress_cb, stop_cb, class_id_to_name: dict|None, logger,
-    return_dets: bool = False
+    progress_cb, stop_cb, class_id_to_name: dict|None, logger
 ):
-    """
-    When return_dets=True, returns (totals, dets_map) where:
-      dets_map[image_path] = [{'cls': name, 'conf': float, 'bbox':[x1,y1,x2,y2], 'centroid':[cx,cy]}, ...]
-    Otherwise returns totals only (backward compatible).
-    """
     if cv2 is None or np is None or YOLO is None:
         raise RuntimeError("Legacy PT path requires opencv-python, numpy, ultralytics installed.")
     outdir.mkdir(parents=True, exist_ok=True)
     ann_dir = (outdir / "annotations"); ann_dir.mkdir(exist_ok=True, parents=True)
-    prv_dir = (outdir / "annotated"); prv_dir.mkdir(exist_ok=True, parents=True)
+    prv_dir = (outdir / "annotated");  prv_dir.mkdir(exist_ok=True, parents=True)
 
     device = select_torch_device("auto")
     logger(f"[legacy-pt] device={device}")
     model_pt = YOLO(model_path)
 
+    # ---- per-run accumulators ----
     totals = {}
-    per_rows_global = []
-    per_rows_aoi = []
-    all_aoi_names = set()
-    all_class_names = set()
-    dets_map = {} if return_dets else None
+    full_rows = []  # rows for detections_full.csv -> [image,cls,conf,x1,y1,x2,y2,cx,cy,in_aoi]
+
+    logger(f"[DEBUG] conf threshold (raw, strict '>'): {float(conf):.6f}; iou={float(iou):.3f}")
 
     N = len(imgs)
     t0 = time.time()
@@ -118,58 +112,68 @@ def run_legacy_pt(
     for idx, p in enumerate(imgs, 1):
         if stop_cb(): break
         img = cv2.imread(str(p))
-        if img is None: logger(f"[WARN] cannot read {p}"); continue
-        H,W = img.shape[:2]
+        if img is None:
+            logger(f"[WARN] cannot read {p}")
+            continue
+        H, W = img.shape[:2]
 
-        # tiling (progress per tile)
+        # --- tiling
         step = max(1, int(tile*(1.0-overlap)))
         xs = list(range(0, W, step)); ys = list(range(0, H, step))
-        tiles_total = len(xs)*len(ys); tiles_done = 0
+        tiles_total = len(xs) * len(ys)
+        tiles_done = 0
 
         all_boxes=[]; all_scores=[]; all_cids=[]
+
         for yy in ys:
             for xx in xs:
                 if stop_cb(): break
                 roi = img[yy:min(yy+tile,H), xx:min(xx+tile,W)]
-                res = model_pt.predict(source=roi, conf=max(conf-0.05,0.05),
-                                       imgsz=tile, device=device, classes=selected_classes, verbose=False)
+                res = model_pt.predict(
+                    source=roi, conf=float(conf), iou=float(iou), imgsz=tile,
+                    device=device, classes=selected_classes, verbose=False
+                )
                 for r in res:
                     if r.boxes is None: continue
                     b = r.boxes.xyxy.cpu().numpy()
-                    s = r.boxes.conf.cpu().numpy()
+                    s = r.boxes.conf.cpu().numpy().astype(float)
                     c = r.boxes.cls.cpu().numpy().astype(int)
-                    if b.size==0: continue
-                    b[:,[0,2]] += xx; b[:,[1,3]] += yy
-                    for bb,ss,cc in zip(b,s,c):
+                    if b.size == 0: continue
+                    b[:, [0,2]] += xx; b[:, [1,3]] += yy  # to global
+                    for bb, ss, cc in zip(b, s, c):
                         all_boxes.append([float(bb[0]),float(bb[1]),float(bb[2]),float(bb[3])])
                         all_scores.append(float(ss)); all_cids.append(int(cc))
+
                 tiles_done += 1
-                frac_all = ((idx-1) + (tiles_done / max(1,tiles_total))) / max(1,N)
-                elapsed = time.time()-t0
-                total = (elapsed/frac_all) if frac_all>1e-6 else 0.0
+                frac_all = ((idx-1) + (tiles_done / max(1, tiles_total))) / max(1, N)
+                elapsed = time.time() - t0
+                total = (elapsed/frac_all) if frac_all > 1e-6 else 0.0
                 remain = max(0.0, total - elapsed)
                 m = int(remain // 60); s = int(remain % 60)
                 progress_cb(frac_all*100.0, f"Image {idx}/{N} — ETA {m:02d}:{s:02d}")
 
-        # NMS
+        # --- NMS then STRICT conf filter (no rounding)
         if all_boxes:
-            keep = _nms_numpy(np.array(all_boxes,np.float32), np.array(all_scores,np.float32), iou_thr=iou)
+            keep = _nms_numpy(np.array(all_boxes, np.float32), np.array(all_scores, np.float32), iou_thr=float(iou))
             all_boxes = [all_boxes[k] for k in keep]
             all_scores = [all_scores[k] for k in keep]
             all_cids = [all_cids[k] for k in keep]
 
-        # AOI masks
-        aois = (aoi_map.get(str(p)) or [])
+        pre_conf_count = len(all_scores)
+        if pre_conf_count:
+            b = np.array(all_boxes, dtype=np.float32)
+            s = np.array(all_scores, dtype=np.float32)
+            c = np.array(all_cids, dtype=int)
+            mask = s > float(conf)  # STRICT '>'
+            b, s, c = b[mask], s[mask], c[mask]
+            all_boxes = b.tolist(); all_scores = s.tolist(); all_cids = c.tolist()
+
+        logger(f"[DEBUG] {Path(p).name}: after NMS {pre_conf_count}, after conf>{conf:.3f} -> {len(all_scores)} kept")
+
+        # --- AOIs
+        aois = (aoi_map.get(str(p)) or [])  # expected [(name, polygon), ...]
         masks = build_aoi_masks(H, W, aois) if aois else []
         union_mask = build_union_mask(H, W, aois) if aois else None
-
-        # counting
-        id2name = class_id_to_name if class_id_to_name else {i:str(i) for i in sorted(set(all_cids))}
-        counts_global = {}
-        counts_aoi_tot = {}
-        counts_aoi_cls = {}
-        for cc in sorted(set(id2name.keys())):
-            all_class_names.add(id2name[cc])
 
         kept_idx = list(range(len(all_boxes)))
         if aois and union_mask is not None:
@@ -186,130 +190,118 @@ def run_legacy_pt(
             else:
                 kidx = []
                 for i in kept_idx:
-                    cx,cy = map(int, bbox_center(all_boxes[i]))
-                    if 0 <= cx < W and 0 <= cy < H and union_mask[cy, cx] > 0:
+                    bb = all_boxes[i]
+                    cx = (bb[0]+bb[2]) * 0.5
+                    cy = (bb[1]+bb[3]) * 0.5
+                    ix, iy = int(cx), int(cy)
+                    if 0 <= ix < W and 0 <= iy < H and union_mask[iy, ix] > 0:
                         kidx.append(i)
                 kept_idx = kidx
 
-        # det list for this image (for GeoJSON export)
-        det_list = []
-
+        # --- counts
+        id2name = class_id_to_name if class_id_to_name else {i:str(i) for i in sorted(set(all_cids))}
+        counts_global: dict[str,int] = {}
         for i in kept_idx:
-            cid = all_cids[i]
-            cname = id2name.get(cid, str(cid))
+            cname = id2name.get(all_cids[i], str(all_cids[i]))
             counts_global[cname] = counts_global.get(cname, 0) + 1
-            if return_dets:
-                bb = all_boxes[i]
-                cx, cy = bbox_center(bb)
-                det_list.append({"cls": cname, "conf": float(all_scores[i]),
-                                 "bbox": [float(x) for x in bb], "centroid": [float(cx), float(cy)]})
-            if masks:
-                for aoi_name, m in masks:
-                    hit = False
-                    if aoi_mode == "box":
-                        thr = float(aoi_box_frac or 0.0)
-                        x1,y1,x2,y2 = [max(0,int(v)) for v in all_boxes[i]]
-                        area = max(1, (x2-x1)*(y2-y1))
-                        inter = int((m[y1:y2, x1:x2] > 0).sum())
-                        hit = (inter / float(area)) >= thr
-                    else:
-                        cx,cy = map(int, bbox_center(all_boxes[i]))
-                        hit = (0 <= cx < W and 0 <= cy < H and m[cy, cx] > 0)
-                    if hit:
-                        counts_aoi_tot[aoi_name] = counts_aoi_tot.get(aoi_name, 0) + 1
-                        counts_aoi_cls[(aoi_name, cname)] = counts_aoi_cls.get((aoi_name, cname), 0) + 1
-                        all_aoi_names.add(aoi_name)
 
-        if return_dets:
-            dets_map[str(p)] = det_list
+        # --- add rows for detections_full.csv (AFTER AOI filtering)
+        in_aoi_any = 1 if (aois and union_mask is not None) else 0
+        for i in kept_idx:
+            bb  = all_boxes[i]
+            sc  = float(all_scores[i])
+            cc  = int(all_cids[i])
+            cx  = (bb[0] + bb[2]) * 0.5
+            cy  = (bb[1] + bb[3]) * 0.5
+            cname = id2name.get(cc, str(cc))
+            full_rows.append([
+                Path(p).name, cname, f"{sc:.6f}",
+                f"{bb[0]:.2f}", f"{bb[1]:.2f}", f"{bb[2]:.2f}", f"{bb[3]:.2f}",
+                f"{cx:.2f}", f"{cy:.2f}", in_aoi_any
+            ])
 
-        for nm, v in counts_global.items():
-            totals[nm] = totals.get(nm,0)+v
-
-        # JSON per-image for annotations folder
-        dets = []
+        # --- per-image JSON (debug/trace)
+        dets_json = []
         for i in kept_idx:
             bb, sc, cc = all_boxes[i], all_scores[i], all_cids[i]
-            cx,cy = bbox_center(bb)
-            dets.append({"bbox":bb, "score":sc, "class_id":int(cc),
-                         "class_name": id2name.get(cc,str(cc)), "cx":cx, "cy":cy})
-        with open(ann_dir/f"{p.stem}.json","w",encoding="utf-8") as f:
-            json.dump({"image": str(p),
-                       "counts_global": counts_global,
-                       "counts_aoi_total": counts_aoi_tot,
-                       "counts_aoi_by_class": {f"{k[0]}::{k[1]}":v for k,v in counts_aoi_cls.items()},
-                       "detections": dets},
+            cx = (bb[0]+bb[2]) * 0.5
+            cy = (bb[1]+bb[3]) * 0.5
+            dets_json.append({"bbox": bb, "score": float(sc), "class_id": int(cc),
+                              "class_name": id2name.get(cc, str(cc)), "cx": cx, "cy": cy})
+        with open(ann_dir / f"{Path(p).stem}.json", "w", encoding="utf-8") as f:
+            json.dump({"image": str(p), "counts_global": counts_global, "detections": dets_json},
                       f, ensure_ascii=False, indent=2)
 
-        # annotated preview (+ AOI); centroid dot if requested or overlay=="centroid"
-        preview = img.copy()
-        if masks:
-            for a in aois:
-                poly = a.get("polygon") or []
-                if len(poly) >= 3:
-                    cv2.polylines(preview, [np.array(poly, np.int32)], True, (0,255,255), 2)
-        for i in kept_idx:
-            x1,y1,x2,y2 = map(int, all_boxes[i])
-            if overlay_mode in ("boxes","boxes_conf"):
-                cv2.rectangle(preview,(x1,y1),(x2,y2),(0,255,0),2)
-            if overlay_mode == "boxes_conf":
-                cname = id2name.get(all_cids[i], str(all_cids[i]))
-                cv2.putText(preview, f"{cname} {all_scores[i]:.2f}", (x1,max(14,y1-6)),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,255,0), 1, cv2.LINE_AA)
-            if draw_centroid or overlay_mode == "centroid":
-                cx,cy = map(int, bbox_center(all_boxes[i]))
-                cv2.circle(preview, (cx,cy), 3, (255,255,255), -1)
+        # --- GIS CSV export (points + boxes + AOIs)
+        try:
+            dets_for_geo = []
+            for i in kept_idx:
+                bb, sc, cc = all_boxes[i], all_scores[i], all_cids[i]
+                cx = (bb[0]+bb[2]) * 0.5
+                cy = (bb[1]+bb[3]) * 0.5
+                dets_for_geo.append({
+                    "cls": id2name.get(cc, str(cc)),
+                    "conf": float(sc),
+                    "bbox": [float(bb[0]), float(bb[1]), float(bb[2]), float(bb[3])],
+                    "centroid": [float(cx), float(cy)]
+                })
+            aois_struct = [{"name": name, "polygon": poly} for (name, poly) in (aois or [])]
+            geo_path = export_geojson_for_image(Path(p), dets_for_geo, aois_struct, outdir)
+            if geo_path:
+                logger(f"[GEO] Wrote {geo_path.name}")
+        except Exception as ge:
+            logger(f"[GEO][WARN] export failed for {p}: {ge}")
 
-        # bottom-right summaries
-        W = preview.shape[1]; H = preview.shape[0]
-        summary = []
-        if counts_global:
-            summary.append("GLOBAL: " + "  ".join([f"{k}:{v}" for k,v in sorted(counts_global.items())]))
-        if counts_aoi_tot:
-            for nm, v in sorted(counts_aoi_tot.items()):
-                summary.append(f"{nm}: {v}")
-        if summary:
-            txt = " | ".join(summary)
-            (tw,th),_ = cv2.getTextSize(txt, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
-            x2,y2 = W-10, H-10
-            cv2.rectangle(preview, (x2-tw-12,y2-th-10),(x2,y2),(0,0,0),-1)
-            cv2.putText(preview, txt, (x2-tw-8,y2-12), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,255,255),2, cv2.LINE_AA)
+        # --- annotated preview (with bottom-right summary)
+        if overlay_mode in ("boxes","boxes_conf","centroid"):
+            draw = img.copy()
+            # AOIs
+            if aois:
+                for name, poly in aois:
+                    if len(poly) >= 3:
+                        pts = np.array(poly, dtype=np.int32)
+                        cv2.polylines(draw, [pts], isClosed=True, color=(255, 200, 0), thickness=2)
 
-        out_path = unique_path(prv_dir / f"{p.stem}_annotated.jpg")
-        cv2.imwrite(str(out_path), preview)
+            # detections
+            for i in kept_idx:
+                x1,y1,x2,y2 = [int(v) for v in all_boxes[i]]
+                cc = int(all_cids[i])
+                name = id2name.get(cc, str(cc))
+                sc = float(all_scores[i])
+                if overlay_mode in ("boxes", "boxes_conf"):
+                    cv2.rectangle(draw, (x1,y1), (x2,y2), (0, 220, 0), 2)
+                    if overlay_mode == "boxes_conf":
+                        label = f"{name} {sc:.2f}"
+                        (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 1)
+                        cv2.rectangle(draw, (x1, y1- th - 6), (x1 + tw + 6, y1), (0,220,0), -1)
+                        cv2.putText(draw, label, (x1+3, y1-4), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,0,0), 1, cv2.LINE_AA)
+                if overlay_mode == "centroid" or draw_centroid:
+                    cx = int((all_boxes[i][0]+all_boxes[i][2]) * 0.5)
+                    cy = int((all_boxes[i][1]+all_boxes[i][3]) * 0.5)
+                    cv2.circle(draw, (cx, cy), 3, (255,255,255), -1)
 
-        # CSV rows
-        g_names = sorted(counts_global.keys())
-        per_rows_global.append(([ "image_path"]+g_names, [str(p)] + [counts_global.get(n,0) for n in g_names]))
-        per_rows_aoi.append({"image": str(p), "aoi_totals": dict(counts_aoi_tot), "aoi_cls": dict(counts_aoi_cls)})
+            # bottom-right class counts
+            if counts_global:
+                lines = [f"{k}: {v}" for k,v in sorted(counts_global.items())]
+                text = "  ".join(lines)
+                (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)
+                h, w = draw.shape[:2]
+                pad = 8
+                x2, y2 = w - pad, h - pad
+                x1, y1 = max(0, x2 - tw - 2*pad), max(0, y2 - th - 2*pad)
+                cv2.rectangle(draw, (x1, y1), (x2, y2), (0,0,0), -1)
+                cv2.putText(draw, text, (x1+pad, y2-pad), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255,255,255), 2, cv2.LINE_AA)
 
-    # totals + CSV
-    save_json(totals, out_path=outdir/"results_totals.json")
-    if per_rows_global:
-        final_names = sorted({n for (hdr,_r) in per_rows_global for n in hdr[1:]})
-        rows = []
-        for (hdr, r) in per_rows_global:
-            path = r[0]; local = dict(zip(hdr[1:], r[1:]))
-            rows.append([path] + [local.get(n,0) for n in final_names])
-        save_csv(rows, header=["image_path"]+final_names, out_path=outdir/"results_per_image.csv")
+            cv2.imwrite(str(prv_dir / f"{Path(p).stem}_ann.jpg"), draw)
 
-    if per_rows_aoi:
-        all_aoi_names = set(); all_class_names = set()
-        for rec in per_rows_aoi:
-            all_aoi_names.update(rec["aoi_totals"].keys())
-            all_aoi_names.update({k[0] for k in rec["aoi_cls"].keys()})
-            all_class_names.update({k[1] for k in rec["aoi_cls"].keys()})
-        aoi_total_cols = [f"AOI:{nm}" for nm in sorted(all_aoi_names)]
-        aoi_cls_cols = [f"AOI:{a}::{c}" for a in sorted(all_aoi_names) for c in sorted(all_class_names)]
-        header = ["image_path"] + aoi_total_cols + aoi_cls_cols
-        rows = []
-        for rec in per_rows_aoi:
-            imgp = rec["image"]; tot = rec["aoi_totals"]; cls = rec["aoi_cls"]
-            row = [imgp] + [tot.get(nm,0) for nm in sorted(all_aoi_names)] + \
-                  [cls.get((a,c),0) for a in sorted(all_aoi_names) for c in sorted(all_class_names)]
-            rows.append(row)
-        save_csv(rows, header=header, out_path=outdir/"results_per_image_by_aoi.csv")
+        # --- totals
+        for nm, v in counts_global.items():
+            totals[nm] = totals.get(nm, 0) + v
 
-    if return_dets:
-        return totals, dets_map
+    # write the full detection list CSV (once per run)
+    if full_rows:
+        hdr = ["image","cls","conf","x1","y1","x2","y2","cx","cy","in_aoi"]
+        save_csv(full_rows, header=hdr, out_path=outdir/"detections_full.csv")
+        logger(f"[INFO] Wrote {outdir/'detections_full.csv'}")
+
     return totals

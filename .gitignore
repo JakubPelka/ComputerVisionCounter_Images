@@ -2,3 +2,6 @@
 /models
 /results
 /sampleImages
+/input
+/output
+/weights

@@ -1,4 +1,4 @@
-# app_core.py
+# app_core.py  — strict conf filter + full detections CSV
 from __future__ import annotations
 from dataclasses import dataclass, asdict
 from pathlib import Path
@@ -22,7 +22,7 @@ try:
     import cv2  # type: ignore
     from PIL import Image, ImageDraw  # for AOI masks
 except Exception:
-    cv2 = None  # will fail at runtime if needed
+    cv2 = None
     Image = None
     ImageDraw = None
 
@@ -328,6 +328,19 @@ class ModelEngine:
             )
         return boxes, scores, classes
 
+    # -------- STRICT CONF FILTER (raw floats, no rounding) --------
+    def _filter_by_conf(self, boxes: np.ndarray, conf: np.ndarray, cls: np.ndarray):
+        """Apply a strict confidence threshold using raw float values."""
+        if boxes is None or conf is None or cls is None or len(conf) == 0:
+            return boxes, conf, cls
+        thr = float(self.cfg.conf)
+        # Guarantee numeric dtype
+        conf = conf.astype(float, copy=False)
+        mask = conf >= thr  # raw compare; do NOT round anywhere for logic
+        if mask.sum() == len(conf):
+            return boxes, conf, cls
+        return boxes[mask], conf[mask], cls[mask]
+
     def _apply_aoi(self, boxes: np.ndarray, cls: np.ndarray, aoi_polys: Optional[List[Polygon]]):
         if not aoi_polys or len(boxes) == 0:
             return np.arange(len(boxes), dtype=int)
@@ -372,6 +385,7 @@ class ModelEngine:
             cf = float(conf[i]) if i < len(conf) else 0.0
             if mode in ("boxes", "boxes_conf"):
                 cv2.rectangle(draw, (x1,y1), (x2,y2), (0, 220, 0), 2)
+                # display-only formatting
                 label = f"{name}" if mode=="boxes" else f"{name} {cf:.2f}"
                 (tw, th), bl = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 1)
                 cv2.rectangle(draw, (x1, y1- th - 6), (x1 + tw + 6, y1), (0,220,0), -1)
@@ -398,6 +412,9 @@ class ModelEngine:
             boxes, conf, cls = self._predict_tiled(img_path)
         else:
             boxes, conf, cls = self._predict_fullimage(img_path)
+
+        # Strict confidence filter AFTER any post-processing (e.g., WBF)
+        boxes, conf, cls = self._filter_by_conf(boxes, conf, cls)
 
         # AOI filter
         keep = self._apply_aoi(boxes, cls, aois)
@@ -433,7 +450,7 @@ class ModelEngine:
                     "bbox_xyxy": [float(x) for x in b],
                     "cls_id": int(c),
                     "cls_name": self.class_names.get(int(c), str(int(c))),
-                    "conf": float(s),
+                    "conf": float(s),  # raw numeric; consumer can format
                     "centroid_xy": [float(x) for x in box_center(b)]
                 }
                 for b, c, s in zip(boxes, cls, conf)
@@ -488,20 +505,45 @@ class ModelEngine:
         det_dir = outdir / "annotations"
         ensure_dir(ann_dir); ensure_dir(det_dir)
 
+        # NEW: full detection rows for CSV
+        full_rows: List[List] = []  # image,cls,conf,x1,y1,x2,y2,cx,cy,in_aoi
+
         t0 = time.time()
         n = len(paths)
+        thr = float(self.cfg.conf)
+        print(f"[DEBUG] Using conf threshold (raw): {thr:.6f}")
+
         for i, p in enumerate(paths, 1):
             if abort_cb and abort_cb():
                 break
             aois = aoi_map.get(str(p), None)
             boxes, conf, cls = self.predict_image(p, aois=aois)
+
+            # per-image debug
+            if len(conf):
+                mn, mx = float(conf.min()), float(conf.max())
+                print(f"[DEBUG] {p.name}: kept {len(conf)} dets in AOI after conf-filter; conf range [{mn:.4f},{mx:.4f}]")
+            else:
+                print(f"[DEBUG] {p.name}: kept 0 dets")
+
+            # rows for full CSV
+            for b, c, s in zip(boxes, cls, conf):
+                cname = self.class_names.get(int(c), str(int(c)))
+                cx, cy = box_center(b)
+                in_aoi = 1 if (aois and len(aois) > 0) else 0
+                full_rows.append([
+                    p.name, cname, f"{float(s):.6f}",
+                    f"{float(b[0]):.2f}", f"{float(b[1]):.2f}", f"{float(b[2]):.2f}", f"{float(b[3]):.2f}",
+                    f"{float(cx):.2f}", f"{float(cy):.2f}", in_aoi
+                ])
+
             cnt = self.summarize_counts(cls)
             per_image_rows.append((str(p), cnt))
 
-            # JSON with detections (engine-native)
+            # JSON with detections (engine-native; already conf-filtered)
             self.save_dets_json(p, boxes, cls, conf, cnt, aois, out_path=det_dir / f"{p.stem}.json")
 
-            # Optional dets_map (for GeoJSON)
+            # Optional dets_map (for GIS/CSV layer writer outside)
             if return_dets:
                 dets = []
                 for b, c, s in zip(boxes, cls, conf):
@@ -518,6 +560,16 @@ class ModelEngine:
                 elapsed = time.time() - t0
                 eta = (elapsed / i) * (n - i) if i > 0 else 0.0
                 progress_cb(i, n, eta)
+
+        # Write the full per-detection CSV once per run
+        if full_rows:
+            full_csv = outdir / "detections_full.csv"
+            ensure_dir(full_csv.parent)
+            with full_csv.open("w", newline="", encoding="utf-8") as f:
+                w = csv.writer(f)
+                w.writerow(["image","cls","conf","x1","y1","x2","y2","cx","cy","in_aoi"])
+                w.writerows(full_rows)
+            print(f"[INFO] Wrote per-detection list: {full_csv}")
 
         # Aggregate totals
         total: Dict[str, int] = {}

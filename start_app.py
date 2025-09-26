@@ -1,6 +1,6 @@
 # start_app.py — main app entry for ComputerVision Counter
 from __future__ import annotations
-import sys, json, time, threading, traceback
+import sys, json, time, threading, traceback, os
 from pathlib import Path
 import tkinter as tk
 from tkinter import filedialog, messagebox
@@ -81,7 +81,7 @@ class App(tk.Tk):
         self.device_var = tk.StringVar(value="auto")
 
         # quality / advanced
-        self.quality = tk.IntVar(value=3)  # 1..3 – we snap to 3 steps even if the UI scale has more ticks
+        self.quality = tk.IntVar(value=3)  # 1..3 – snap to 3 steps
         self.advanced_override = False
         base = BUILTIN_PRESETS[DEFAULT_QUALITY_NAME].copy()
         self.advanced_params = base.copy()
@@ -116,6 +116,9 @@ class App(tk.Tk):
         self._logfile: Path | None = None
         self._worker: threading.Thread | None = None
 
+        # ---- auto-prefill paths if repo-style folders exist
+        self._prefill_paths_from_repo()
+
         # build UI
         ui_panels.build_main_ui(self)
 
@@ -126,9 +129,36 @@ class App(tk.Tk):
         self._update_preset_label()
         self._log("Ready.")
 
+    # ---------- auto-prefill helpers ----------
+    def _prefill_paths_from_repo(self):
+        base = Path(__file__).parent.resolve()
+
+        # Input
+        cand_input = base / "input"
+        if cand_input.exists() and cand_input.is_dir():
+            self.input_dir.set(str(cand_input))
+
+        # Output
+        cand_out = base / "results"
+        try:
+            cand_out.mkdir(exist_ok=True)
+        except Exception:
+            pass
+        self.output_dir.set(str(cand_out))
+
+        # Weights — prefer first .pt/.onnx inside ./weights; if none, set to that folder (so the dialog opens there)
+        cand_w = base / "weights"
+        if cand_w.exists() and cand_w.is_dir():
+            models = sorted([p for p in cand_w.iterdir() if p.suffix.lower() in (".pt",".onnx")])
+            if models:
+                self.weights_path.set(str(models[0]))
+            else:
+                self.weights_path.set(str(cand_w))
+
     # ---------- file pickers ----------
     def browse_input(self):
-        d = filedialog.askdirectory(title="Select input folder with images")
+        start = self.input_dir.get().strip() or str((Path(__file__).parent / "input").resolve())
+        d = filedialog.askdirectory(title="Select input folder with images", initialdir=start)
         if not d: return
         self.input_dir.set(d)
         imgs = collect_images(Path(d))
@@ -136,8 +166,10 @@ class App(tk.Tk):
         self._refresh_files_label()
 
     def browse_files(self):
+        start = self.input_dir.get().strip() or str((Path(__file__).parent / "input").resolve())
         files = filedialog.askopenfilenames(
             title="Select images",
+            initialdir=start,
             filetypes=[("Images","*.jpg *.jpeg *.png *.bmp *.tif *.tiff *.webp")]
         )
         if not files: return
@@ -163,19 +195,28 @@ class App(tk.Tk):
             pass
 
     def browse_output(self):
-        d = filedialog.askdirectory(title="Select output folder")
+        start = self.output_dir.get().strip() or str((Path(__file__).parent / "results").resolve())
+        d = filedialog.askdirectory(title="Select output folder", initialdir=start)
         if d: self.output_dir.set(d)
 
     def browse_weights(self):
-        p = filedialog.askopenfilename(
+        cur = self.weights_path.get().strip()
+        start_dir = None
+        if cur:
+            p = Path(cur)
+            start_dir = p.parent if p.exists() else (Path(__file__).parent / "weights")
+        else:
+            start_dir = Path(__file__).parent / "weights"
+        pth = filedialog.askopenfilename(
             title="Select weights (.pt or .onnx)",
+            initialdir=str(start_dir.resolve()),
             filetypes=[("Models","*.pt *.onnx"), ("All files","*.*")]
         )
-        if not p: return
-        self.weights_path.set(p)
-        self._log(f"Model: {Path(p).name}")
+        if not pth: return
+        self.weights_path.set(pth)
+        self._log(f"Model: {Path(pth).name}")
         try:
-            cfg = InferConfig(model_path=p, engine=self.engine_var.get(), device=self.device_var.get())
+            cfg = InferConfig(model_path=pth, engine=self.engine_var.get(), device=self.device_var.get())
             eng = ModelEngine(cfg)
             self.class_names = eng.available_classes()
             self._populate_classes(self.class_names)
@@ -185,7 +226,6 @@ class App(tk.Tk):
 
     # ---------- presets / AOI ----------
     def _on_quality_changed(self):
-        # snap to 1/2/3 regardless of UI ticks
         cur = float(self.quality.get())
         snap, name = _quality_to_name_snapped(cur)
         if cur != snap:
@@ -210,7 +250,7 @@ class App(tk.Tk):
             messagebox.showinfo("AOI", "Select input images first.")
             return
 
-        # reuse AOIs from disk silently (second/next run convenience)
+        # reuse AOIs from disk silently
         self._import_aois_from_folder_for_images(imgs, silent=True)
 
         idx = 0
@@ -526,7 +566,7 @@ class App(tk.Tk):
                             stop_cb=lambda: self._stop,
                             class_id_to_name=(self.class_names or None),
                             logger=self._log,
-                            return_dets=True
+                            return_dets=True  # newer signature: will raise TypeError on older
                         )
                         totals, dets_map = result
                     except TypeError:
@@ -575,8 +615,7 @@ class App(tk.Tk):
     def _tsafe(self, fn):
         try: self.after(0, fn)
         except Exception: pass
-        
-        
+
     # ---------- class toggles ----------
     def select_all_classes(self, state: bool = True):
         """Turn ON/OFF all class checkboxes."""
