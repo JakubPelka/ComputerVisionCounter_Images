@@ -1,25 +1,18 @@
-# geo_export.py — export detections to GeoJSON (points/boxes), CSV, plain JSON, and optional KML (WGS84)
+# geo_export.py — CSV-only GIS export (points & boxes as WKT; AOIs as WKT)
 from __future__ import annotations
 import json, math, re
 from pathlib import Path
 from typing import Iterable, Optional, Tuple, Dict, Any
 
 try:
-    import tifffile  # for GeoTIFF georeferencing
+    import tifffile  # optional, for GeoTIFF georeferencing
 except Exception:
     tifffile = None
-
-try:
-    # only used when writing KML (reproject to EPSG:4326)
-    from pyproj import CRS, Transformer  # type: ignore
-except Exception:
-    CRS = None
-    Transformer = None
 
 Affine = Tuple[float, float, float, float, float, float]
 _WF_EXTS = {".wld", ".jgw", ".jpgw", ".jpegw", ".pgw", ".pngw", ".tfw", ".gfw", ".gifw", ".bpw", ".tifw"}
 
-# ---------- Worldfile / GeoTIFF helpers ----------
+# -------- worldfile / geotiff helpers --------
 
 def _find_worldfile(img_path: Path) -> Optional[Path]:
     base = img_path.with_suffix("")
@@ -37,10 +30,10 @@ def _find_worldfile(img_path: Path) -> Optional[Path]:
     return None
 
 def _load_worldfile(fp: Path) -> Affine:
+    # ESRI order: A, D, B, E, C, F  -> convert to (A,B,C,D,E,F)
     vals = [float(x) for x in fp.read_text(encoding="utf-8").replace(",", ".").split()]
     if len(vals) != 6:
         raise ValueError(f"Worldfile must have 6 numbers, got {len(vals)} in {fp}")
-    # ESRI order: A, D, B, E, C, F  -> convert to (A,B,C,D,E,F)
     A, D, B, E, C, F = vals
     return (A, B, C, D, E, F)
 
@@ -55,7 +48,6 @@ def _affine_from_geotiff(fp: Path) -> Optional[Affine]:
                 A = m[0]; B = m[1]; C = m[3]
                 D = m[4]; E = m[5]; F = m[7]
                 return (A, B, C, D, E, F)
-            # GDAL-style: PixelScale + Tiepoint
             ps = tags.get("ModelPixelScaleTag")
             tp = tags.get("ModelTiepointTag")
             if ps and tp:
@@ -79,28 +71,7 @@ def get_affine(img_path: Path) -> Optional[Affine]:
         if af: return af
     return None
 
-# ---------- CRS helpers ----------
-
-def _epsg_from_prj(prj_path: Path) -> Optional[str]:
-    try:
-        txt = prj_path.read_text(encoding="utf-8", errors="ignore")
-    except Exception:
-        try: txt = prj_path.read_text(encoding="latin-1", errors="ignore")
-        except Exception: return None
-    m = re.search(r'AUTHORITY\["EPSG","(\d+)"\]', txt)
-    return m.group(1) if m else None
-
-def _make_wgs84_transformer(epsg: Optional[str]):
-    if not (epsg and CRS and Transformer):
-        return None
-    try:
-        crs_src = CRS.from_epsg(int(epsg))
-        crs_dst = CRS.from_epsg(4326)
-        return Transformer.from_crs(crs_src, crs_dst, always_xy=True)
-    except Exception:
-        return None
-
-# ---------- GeoJSON helpers ----------
+# -------- small utils --------
 
 def pix2geo(aff: Affine, col: float, row: float) -> Tuple[float, float]:
     A,B,C,D,E,F = aff
@@ -111,79 +82,49 @@ def pix2geo(aff: Affine, col: float, row: float) -> Tuple[float, float]:
 def _finite_xy(x, y) -> bool:
     return (x is not None) and (y is not None) and math.isfinite(x) and math.isfinite(y)
 
-def _feat_point(x: float, y: float, props: Dict[str, Any]) -> Dict[str, Any]:
-    return {"type":"Feature","geometry":{"type":"Point","coordinates":[x,y]},"properties":props}
-
-def _feat_poly(coords, props: Dict[str, Any]) -> Dict[str, Any]:
-    ring = [[float(x), float(y)] for (x,y) in coords]
-    if ring[0] != ring[-1]:
-        ring.append(ring[0])
-    return {"type":"Feature","geometry":{"type":"Polygon","coordinates":[ring]},"properties":props}
-
-def _bbox_to_poly(px: float, py: float, qx: float, qy: float, aff: Affine):
-    x1,y1 = pix2geo(aff, px, py)
-    x2,y2 = pix2geo(aff, qx, py)
-    x3,y3 = pix2geo(aff, qx, qy)
-    x4,y4 = pix2geo(aff, px, qy)
-    return [(x1,y1),(x2,y2),(x3,y3),(x4,y4)]
-
-# ---------- Simple writers ----------
-
-def _write_text(path: Path, text: str):
-    path.write_text(text, encoding="utf-8")
-
-def _write_json(path: Path, payload: dict):
-    _write_text(path, json.dumps(payload, ensure_ascii=False, indent=2))
-
 def _csv_escape(s: str) -> str:
+    s = "" if s is None else str(s)
     if any(ch in s for ch in [",", '"', "\n"]):
         return '"' + s.replace('"', '""') + '"'
     return s
 
-# ---------- Public API ----------
+def _poly_wkt(coords) -> str:
+    # coords: [(x,y), ...] (no need to repeat start; we’ll close it)
+    if not coords: return "POLYGON(())"
+    ring = coords + ([coords[0]] if coords[0] != coords[-1] else [])
+    coord_str = ", ".join(f"{x:.6f} {y:.6f}" for (x,y) in ring)
+    return f"POLYGON(({coord_str}))"
 
-def export_geojson_for_image(
+# -------- public API (keeps original name; now CSV-only) --------
+
+def export_geojson_for_image(  # noqa: API kept for start_app; now writes CSVs only
     image_path: Path,
     detections: Iterable[Dict[str, Any]],
     aois: Optional[Iterable[Dict[str, Any]]],
     out_dir: Path,
-    crs_hint: Optional[str] = None,  # optional EPSG like "EPSG:3007" (used only for KML reprojection)
+    crs_hint: Optional[str] = None,  # unused in CSV variant
 ) -> Optional[Path]:
     """
-    Writes (if data present):
-      - <stem>__detections_p.geojson / .csv         (points)
-      - <stem>__detections_b.geojson / .csv         (boxes; CSV has WKT)
-      - <stem>__detections.json                      (plain JSON: points+boxes)
-      - <stem>__detections_wgs84.kml                 (if reprojection available)
-      - <stem>__aois.geojson                         (AOI polygons)
-    Returns path to the *points* GeoJSON if written, else boxes GeoJSON, else None.
+    CSV-only export:
+      - <stem>__detections_p.csv  (image, cls, conf, x, y)
+      - <stem>__detections_b.csv  (image, cls, conf, wkt)
+      - <stem>__aois.csv          (image, name, wkt)
+    Returns the path to the *points* CSV if written, else the boxes CSV, else None.
     """
     image_path = Path(image_path)
     out_dir = Path(out_dir); out_dir.mkdir(parents=True, exist_ok=True)
 
     aff = get_affine(image_path)
     if not aff:
+        # no georef -> nothing to write
         return None
 
-    # EPSG (for optional KML reprojection)
-    epsg = None
-    if crs_hint:
-        m = re.search(r"EPSG[:]*[:]*\s*(\d+)", crs_hint, re.IGNORECASE)
-        if m: epsg = m.group(1)
-    if not epsg:
-        prj = image_path.with_suffix(".prj")
-        if prj.exists():
-            epsg = _epsg_from_prj(prj)
-    to_wgs84 = _make_wgs84_transformer(epsg)
+    points_rows = []  # dicts with image,cls,conf,x,y
+    boxes_rows  = []  # dicts with image,cls,conf,wkt
 
-    feats_p: list[Dict[str, Any]] = []
-    feats_b: list[Dict[str, Any]] = []
-    plain_points: list[dict] = []
-    plain_boxes: list[dict] = []
-
-    # Detections -> world coords
+    # ---- detections -> world coords ----
     for det in (detections or []):
-        cls = det.get("cls") or det.get("class") or det.get("label")
+        cls  = det.get("cls") or det.get("class") or det.get("label")
         conf = float(det.get("conf", det.get("confidence", 0.0)))
         bbox = det.get("bbox") or det.get("box")
         if not bbox or len(bbox) != 4:
@@ -194,105 +135,60 @@ def export_geojson_for_image(
         # centroid
         gx, gy = pix2geo(aff, float(cx), float(cy))
         if _finite_xy(gx, gy):
-            feats_p.append(_feat_point(gx, gy, {"type":"centroid","cls":cls,"conf":conf,"image":image_path.name}))
-            plain_points.append({"x": gx, "y": gy, "cls": cls, "conf": conf, "image": image_path.name})
+            points_rows.append({"image": image_path.name, "cls": cls, "conf": conf, "x": gx, "y": gy})
 
-        # bbox polygon
-        poly = _bbox_to_poly(x1,y1,x2,y2, aff)
+        # bbox polygon -> WKT
+        p1 = pix2geo(aff, x1, y1)
+        p2 = pix2geo(aff, x2, y1)
+        p3 = pix2geo(aff, x2, y2)
+        p4 = pix2geo(aff, x1, y2)
+        poly = [p1, p2, p3, p4]
         if all(_finite_xy(px,py) for (px,py) in poly):
-            feats_b.append(_feat_poly(poly, {"type":"bbox","cls":cls,"conf":conf,"image":image_path.name}))
-            plain_boxes.append({"poly": poly, "cls": cls, "conf": conf, "image": image_path.name})
+            boxes_rows.append({"image": image_path.name, "cls": cls, "conf": conf, "wkt": _poly_wkt(poly)})
 
-    # ----- AOIs (GeoJSON; no CRS to avoid mismatches) -----
+    # ---- AOIs -> WKT CSV ----
     if aois:
-        aoi_feats = []
+        aoi_rows = []
         for a in aois:
             name = a.get("name","AOI")
             poly_px = a.get("polygon") or a.get("points") or []
             poly_geo = [pix2geo(aff, float(px), float(py)) for (px,py) in poly_px]
             if all(_finite_xy(px,py) for (px,py) in poly_geo):
-                aoi_feats.append(_feat_poly(poly_geo, {"type":"aoi","name":name,"image":image_path.name}))
-        if aoi_feats:
-            _write_json(out_dir / f"{image_path.stem}__aois.geojson",
-                        {"type":"FeatureCollection","features":aoi_feats})
+                aoi_rows.append({"image": image_path.name, "name": name, "wkt": _poly_wkt(poly_geo)})
+        if aoi_rows:
+            p = out_dir / f"{image_path.stem}__aois.csv"
+            with p.open("w", encoding="utf-8") as f:
+                f.write("image,name,wkt\n")
+                for r in aoi_rows:
+                    f.write(",".join([_csv_escape(r["image"]), _csv_escape(r["name"]), _csv_escape(r["wkt"])]) + "\n")
 
-    # ----- GeoJSON (points / boxes) -----
     points_path = None
     boxes_path = None
-    if feats_p:
-        points_path = out_dir / f"{image_path.stem}__detections_p.geojson"
-        _write_json(points_path, {"type":"FeatureCollection","features":feats_p})
-    if feats_b:
-        boxes_path = out_dir / f"{image_path.stem}__detections_b.geojson"
-        _write_json(boxes_path, {"type":"FeatureCollection","features":feats_b})
 
-    # ----- CSVs -----
-    if plain_points:
-        csvp = out_dir / f"{image_path.stem}__detections_p.csv"
-        with csvp.open("w", encoding="utf-8") as f:
+    # ---- write detections CSVs ----
+    if points_rows:
+        points_path = out_dir / f"{image_path.stem}__detections_p.csv"
+        with points_path.open("w", encoding="utf-8") as f:
             f.write("image,cls,conf,x,y\n")
-            for r in plain_points:
+            for r in points_rows:
                 f.write(",".join([
                     _csv_escape(r["image"]),
-                    _csv_escape(str(r["cls"])),
-                    str(r["conf"]),
-                    f"{r['x']:.6f}",
-                    f"{r['y']:.6f}",
+                    _csv_escape("" if r["cls"] is None else str(r["cls"])),
+                    f"{float(r['conf']):.6f}",
+                    f"{float(r['x']):.6f}",
+                    f"{float(r['y']):.6f}",
                 ]) + "\n")
-    if plain_boxes:
-        csvb = out_dir / f"{image_path.stem}__detections_b.csv"
-        with csvb.open("w", encoding="utf-8") as f:
+
+    if boxes_rows:
+        boxes_path = out_dir / f"{image_path.stem}__detections_b.csv"
+        with boxes_path.open("w", encoding="utf-8") as f:
             f.write("image,cls,conf,wkt\n")
-            for r in plain_boxes:
-                poly = r["poly"]
-                # WKT polygon (no CRS info here; QGIS can load by choosing WKT geometry)
-                coords = ", ".join([f"{x:.6f} {y:.6f}" for (x,y) in (poly + [poly[0]])])
-                wkt = f"POLYGON(({coords}))"
+            for r in boxes_rows:
                 f.write(",".join([
                     _csv_escape(r["image"]),
-                    _csv_escape(str(r["cls"])),
-                    str(r["conf"]),
-                    _csv_escape(wkt),
+                    _csv_escape("" if r["cls"] is None else str(r["cls"])),
+                    f"{float(r['conf']):.6f}",
+                    _csv_escape(r["wkt"]),
                 ]) + "\n")
-
-    # ----- Plain JSON (easy to inspect) -----
-    _write_json(out_dir / f"{image_path.stem}__detections.json",
-                {"image": image_path.name, "points": plain_points, "boxes": plain_boxes})
-
-    # ----- Optional KML (WGS84) -----
-    if to_wgs84 and (plain_points or plain_boxes):
-        kml = [ '<?xml version="1.0" encoding="UTF-8"?>',
-                '<kml xmlns="http://www.opengis.net/kml/2.2">',
-                "  <Document>",
-                f"    <name>{image_path.stem} detections</name>" ]
-        # points
-        for r in plain_points:
-            lon, lat = to_wgs84.transform(r["x"], r["y"])
-            kml += [
-                "    <Placemark>",
-                f"      <name>{r['cls']} ({r['conf']:.2f})</name>",
-                "      <Point>",
-                f"        <coordinates>{lon:.8f},{lat:.8f},0</coordinates>",
-                "      </Point>",
-                "    </Placemark>"
-            ]
-        # boxes
-        for r in plain_boxes:
-            ring_ll = [to_wgs84.transform(x, y) for (x,y) in (r["poly"] + [r["poly"][0]])]
-            coord_str = " ".join([f"{lon:.8f},{lat:.8f},0" for (lon,lat) in ring_ll])
-            kml += [
-                "    <Placemark>",
-                f"      <name>{r['cls']} ({r['conf']:.2f})</name>",
-                "      <Polygon>",
-                "        <outerBoundaryIs>",
-                "          <LinearRing>",
-                f"            <coordinates>{coord_str}</coordinates>",
-                "          </LinearRing>",
-                "        </outerBoundaryIs>",
-                "      </Polygon>",
-                "    </Placemark>"
-            ]
-        kml += ["  </Document>", "</kml>"]
-        _write_text(out_dir / f"{image_path.stem}__detections_wgs84.kml", "\n".join(kml))
 
     return points_path or boxes_path
