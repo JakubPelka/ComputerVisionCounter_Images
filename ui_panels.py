@@ -1,4 +1,4 @@
-# ui_panels.py — trimmed UI: no Engine/Device row; AOI Import/Export buttons removed
+# ui_panels.py — main window layout (3-step Quality slider + class toolbar)
 from __future__ import annotations
 import tkinter as tk
 from tkinter import ttk
@@ -17,11 +17,14 @@ def build_main_ui(app):
     _row_browse(paths, "Output folder (optional):", app.output_dir, app.browse_output, is_dir=True)
     _row_browse(paths, "Weights (.pt / .onnx):", app.weights_path, app.browse_weights, is_dir=False)
 
-    # Quality
-    qf = tk.LabelFrame(root, text="Quality (1 = faster • 5 = ultra)"); qf.pack(fill="x", pady=(0,6))
+    # Quality (3 presets)
+    qf = tk.LabelFrame(root, text="Quality presets (1 Fast • 2 Balanced • 3 Ultra)"); qf.pack(fill="x", pady=(0,6))
     left = tk.Frame(qf); left.pack(side="left", fill="x", expand=True)
-    tk.Scale(left, from_=1, to=5, orient="horizontal", variable=app.quality,
-             command=lambda *_: app._update_preset_label()).pack(side="left", fill="x", expand=True, padx=6, pady=2)
+    tk.Scale(
+        left, from_=1, to=3, resolution=1, orient="horizontal",
+        variable=app.quality,
+        command=lambda *_: app._update_preset_label()
+    ).pack(side="left", fill="x", expand=True, padx=6, pady=2)
     app.preset_label = tk.Label(left, text=""); app.preset_label.pack(side="left", padx=6)
     app._update_preset_label()
     tk.Button(qf, text="Advanced…", command=app.open_advanced).pack(side="right", padx=6, pady=2)
@@ -37,7 +40,6 @@ def build_main_ui(app):
     tk.Radiobutton(m, text="Box-area fraction", variable=app.aoi_mode, value="box").pack(side="left", padx=8)
     tk.Label(m, text="min box fraction inside AOI:").pack(side="left", padx=(12,2))
     tk.Spinbox(m, from_=0.05, to=1.0, increment=0.05, width=5, textvariable=app.aoi_box_frac).pack(side="left")
-
     act = tk.Frame(aoi); act.pack(fill="x", pady=(4,2))
     tk.Button(act, text="Open AOI editor…", command=app._open_aoi_editor).pack(side="left")
 
@@ -50,8 +52,14 @@ def build_main_ui(app):
     tk.Checkbutton(vis, text="Draw centroid dot", variable=app.draw_centroid).pack(side="left", padx=(12,0))
     tk.Checkbutton(vis, text="Save annotated images", variable=app.annotate).pack(side="left", padx=(12,0))
 
-    # Classes (shorter)
+    # Classes (with toolbar: All / None / Invert)
     cl = tk.LabelFrame(root, text="Classes (load weights to populate)"); cl.pack(fill="both", expand=True, pady=(0,6))
+    toolbar = tk.Frame(cl); toolbar.pack(fill="x", pady=(2,4))
+    tk.Label(toolbar, text="Toggle:").pack(side="left")
+    tk.Button(toolbar, text="All", width=6, command=lambda: app.select_all_classes(True)).pack(side="left", padx=(6,0))
+    tk.Button(toolbar, text="None", width=6, command=lambda: app.select_all_classes(False)).pack(side="left", padx=4)
+    tk.Button(toolbar, text="Invert", width=6, command=app.invert_classes).pack(side="left", padx=4)
+
     app.classes_scroll = ScrollableFrame(cl, height=120)
     app.classes_scroll.pack(fill="both", expand=True)
     app.classes_container = app.classes_scroll.inner
