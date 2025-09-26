@@ -455,13 +455,12 @@ class ModelEngine:
             polys = aoi_map.get(str(p), [])
             if not polys:
                 continue
-            # JSON
+            # JSON  (use 'aois' with 'polygon' to match newer format)
             jpath = aoi_dir / (p.stem + ".json")
-            save_json({"image": str(p), "polygons": polys}, jpath)
+            save_json({"image": p.name, "aois": [{"name":"AOI","polygon": polys}]}, jpath)
             # Mask
             if Image is None:
                 continue
-            # open original to get size
             try:
                 img = Image.open(p).convert("RGB")
             except Exception:
@@ -477,8 +476,14 @@ class ModelEngine:
     def predict_batch(self, paths: List[Path], aoi_map: Dict[str, List[Polygon]],
                       outdir: Path, annotate: bool,
                       progress_cb: Optional[Callable[[int, int, float], None]] = None,
-                      abort_cb: Optional[Callable[[], bool]] = None):
+                      abort_cb: Optional[Callable[[], bool]] = None,
+                      return_dets: bool = False):
+        """
+        return_dets=True -> also returns a dict[str image_path] -> List[det dicts]
+        det dict: {'cls': name, 'conf': float, 'bbox': [x1,y1,x2,y2], 'centroid':[cx,cy]}
+        """
         per_image_rows: List[Tuple[str, Dict[str, int]]] = []
+        dets_map: Dict[str, List[Dict]] = {} if return_dets else {}
         ann_dir = outdir / "annotated"
         det_dir = outdir / "annotations"
         ensure_dir(ann_dir); ensure_dir(det_dir)
@@ -493,10 +498,21 @@ class ModelEngine:
             cnt = self.summarize_counts(cls)
             per_image_rows.append((str(p), cnt))
 
+            # JSON with detections (engine-native)
+            self.save_dets_json(p, boxes, cls, conf, cnt, aois, out_path=det_dir / f"{p.stem}.json")
+
+            # Optional dets_map (for GeoJSON)
+            if return_dets:
+                dets = []
+                for b, c, s in zip(boxes, cls, conf):
+                    cname = self.class_names.get(int(c), str(int(c)))
+                    cx, cy = box_center(b)
+                    dets.append({"cls": cname, "conf": float(s),
+                                 "bbox": [float(x) for x in b], "centroid": [float(cx), float(cy)]})
+                dets_map[str(p)] = dets
+
             if annotate and cv2 is not None:
                 self.save_annotated(p, boxes, cls, conf, cnt, aois, out_path=ann_dir / f"{p.stem}_ann.jpg")
-            # JSON with detections
-            self.save_dets_json(p, boxes, cls, conf, cnt, aois, out_path=det_dir / f"{p.stem}.json")
 
             if progress_cb:
                 elapsed = time.time() - t0
@@ -508,6 +524,9 @@ class ModelEngine:
         for _, cnt in per_image_rows:
             for k, v in cnt.items():
                 total[k] = total.get(k, 0) + v
+
+        if return_dets:
+            return per_image_rows, total, dets_map
         return per_image_rows, total
 
 # ---- Run metadata helpers ----

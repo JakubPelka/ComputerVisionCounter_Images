@@ -4,6 +4,8 @@
 # - AOI import/export compatibility (old 'points' and new 'polygon')
 # - Class grid keeps REAL class IDs
 # - Smooth progress updates
+# - Quality slider now maps to Fast/Balanced/Ultra (same as Advanced)
+# - Optional GeoJSON export (if geo_export.py is present and detections are available)
 
 from __future__ import annotations
 import sys, json, time, threading
@@ -25,6 +27,12 @@ try:
 except Exception:
     cv2 = None
 
+# Optional geo export
+try:
+    from geo_export import export_geojson_for_image
+except Exception:
+    export_geojson_for_image = None
+
 # --- project imports
 from app_core import (
     InferConfig, ModelEngine, collect_images,
@@ -37,23 +45,35 @@ from legacy_pt_runner import run_legacy_pt, build_union_mask
 
 APP_TITLE = "ComputerVision Counter — Count anything without coding"
 
-# -------- presets / defaults --------
-QUALITY_PRESETS = {
-    1: {"tile": 640,  "overlap": 0.15, "conf": 0.40, "iou_nms": 0.65, "use_wbf": True},
-    2: {"tile": 896,  "overlap": 0.25, "conf": 0.45, "iou_nms": 0.60, "use_wbf": True},
-    3: {"tile": 1024, "overlap": 0.30, "conf": 0.50, "iou_nms": 0.55, "use_wbf": True},
-    4: {"tile": 1280, "overlap": 0.45, "conf": 0.60, "iou_nms": 0.50, "use_wbf": True},
-    5: {"tile": 2560, "overlap": 0.60, "conf": 0.75, "iou_nms": 0.40, "use_wbf": True},
+# -------- presets / defaults (match ui_advanced) --------
+BUILTIN_PRESETS = {
+    "Fast":     {"tile": 896,  "overlap": 0.25, "conf": 0.45, "iou_nms": 0.60,
+                 "use_wbf": True, "wbf_alpha": 0.20, "wbf_iou": None, "wbf_auto": True,
+                 "seam_iou_low": 0.30, "seam_band_factor": 0.10, "seam_weight": 0.35, "margin_weight": 0.25},
+    "Balanced": {"tile": 1024, "overlap": 0.30, "conf": 0.50, "iou_nms": 0.55,
+                 "use_wbf": True, "wbf_alpha": 0.20, "wbf_iou": None, "wbf_auto": True,
+                 "seam_iou_low": 0.30, "seam_band_factor": 0.10, "seam_weight": 0.35, "margin_weight": 0.25},
+    "Ultra":    {"tile": 2560, "overlap": 0.60, "conf": 0.75, "iou_nms": 0.40,
+                 "use_wbf": True, "wbf_alpha": 0.20, "wbf_iou": None, "wbf_auto": True,
+                 "seam_iou_low": 0.30, "seam_band_factor": 0.10, "seam_weight": 0.35, "margin_weight": 0.25},
 }
-DEFAULT_QUALITY = 5
+DEFAULT_QUALITY_NAME = "Ultra"
+
 DEFAULT_WBF_ALPHA = 0.20
 DEFAULT_SEAM_IOU_LOW = 0.30
 DEFAULT_SEAM_BAND_FACTOR = 0.10
 DEFAULT_SEAM_WEIGHT = 0.35
 DEFAULT_MARGIN_WEIGHT = 0.25
 
-def auto_wbf_iou(q, nms):  # helper for a decent default WBF IoU
-    return 0.60 if int(q) == 5 else max(0.55, float(nms))
+def _quality_to_name(qvalue: float) -> str:
+    """Map slider (1..5) to our named presets; 1–2=Fast, 3=Balanced, 4–5=Ultra."""
+    q = float(qvalue)
+    if q <= 2.0: return "Fast"
+    if q < 4.0:  return "Balanced"
+    return "Ultra"
+
+def auto_wbf_iou(qname: str, nms: float) -> float:  # helper for a decent default WBF IoU
+    return 0.60 if qname == "Ultra" else max(0.55, float(nms))
 
 
 class App(tk.Tk):
@@ -78,21 +98,18 @@ class App(tk.Tk):
         self.device_var = tk.StringVar(value="auto")  # auto/cpu/cuda:0
 
         # quality / advanced
-        self.quality = tk.IntVar(value=DEFAULT_QUALITY)
+        self.quality = tk.IntVar(value=5)  # slider 1..5
         self.advanced_override = False
+        base = BUILTIN_PRESETS[DEFAULT_QUALITY_NAME].copy()
         self.advanced_params = {
-            "tile": QUALITY_PRESETS[DEFAULT_QUALITY]["tile"],
-            "overlap": QUALITY_PRESETS[DEFAULT_QUALITY]["overlap"],
-            "conf": QUALITY_PRESETS[DEFAULT_QUALITY]["conf"],
-            "iou_nms": QUALITY_PRESETS[DEFAULT_QUALITY]["iou_nms"],
-            "use_wbf": True,
-            "wbf_alpha": DEFAULT_WBF_ALPHA,
-            "wbf_iou": None, "wbf_auto": True,
-            "seam_iou_low": DEFAULT_SEAM_IOU_LOW,
-            "seam_band_factor": DEFAULT_SEAM_BAND_FACTOR,
-            "seam_weight": DEFAULT_SEAM_WEIGHT,
-            "margin_weight": DEFAULT_MARGIN_WEIGHT,
+            "tile": base["tile"], "overlap": base["overlap"], "conf": base["conf"], "iou_nms": base["iou_nms"],
+            "use_wbf": base["use_wbf"], "wbf_alpha": base["wbf_alpha"],
+            "wbf_iou": base["wbf_iou"], "wbf_auto": base["wbf_auto"],
+            "seam_iou_low": base["seam_iou_low"], "seam_band_factor": base["seam_band_factor"],
+            "seam_weight": base["seam_weight"], "margin_weight": base["margin_weight"],
         }
+        # keep slider + presets in sync
+        self.quality.trace_add("write", lambda *_: self._on_quality_changed())
 
         # AOI
         self.use_aoi = tk.BooleanVar(value=False)
@@ -131,6 +148,7 @@ class App(tk.Tk):
         self.bind("<Control-Return>", lambda e: self.start())
         self.bind("<Control-a>", lambda e: self._open_aoi_editor())
 
+        self._update_preset_label()
         self._log("Ready.")
 
     # ---------- pickers ----------
@@ -196,6 +214,16 @@ class App(tk.Tk):
             self._log(f"[WARN] Could not read classes from engine: {e}")
 
     # ---------- AOI: helpers / actions ----------
+    def _on_quality_changed(self):
+        """Apply named preset to advanced_params whenever slider moves (unless user is in override)."""
+        name = _quality_to_name(self.quality.get())
+        p = BUILTIN_PRESETS[name]
+        self.advanced_params.update(p)
+        self.advanced_override = False
+        self._update_preset_label()
+        self._log(f"[ADV] Quality preset from slider: {name} → "
+                  f"tile={p['tile']} overlap={p['overlap']} conf={p['conf']} nms={p['iou_nms']}")
+
     def _on_toggle_use_aoi(self):
         try:
             if self.use_aoi.get():
@@ -363,10 +391,11 @@ class App(tk.Tk):
 
     # ---------- UI helpers ----------
     def _update_preset_label(self):
-        p = QUALITY_PRESETS.get(int(self.quality.get()), QUALITY_PRESETS[DEFAULT_QUALITY])
+        name = _quality_to_name(self.quality.get())
+        p = BUILTIN_PRESETS[name]
         try:
             self.preset_label.config(
-                text=f"tile={p['tile']}  overlap={p['overlap']}  conf={p['conf']}  nms={p['iou_nms']}  WBF={p['use_wbf']}"
+                text=f"{name} • tile={p['tile']}  overlap={p['overlap']}  conf={p['conf']}  nms={p['iou_nms']}  WBF={p['use_wbf']}"
             )
         except Exception:
             pass
@@ -527,11 +556,11 @@ class App(tk.Tk):
         self._log(f"Output → {outdir}")
         self._log(f"Using model: {model}  | engine={self.engine_var.get()} device={self.device_var.get()}")
 
-        base = QUALITY_PRESETS.get(int(self.quality.get()), QUALITY_PRESETS[DEFAULT_QUALITY]).copy()
+        # base params (Advanced override wins)
+        qname = _quality_to_name(self.quality.get())
+        base = BUILTIN_PRESETS[qname].copy()
         if self.advanced_override and self.advanced_params:
             base.update(self.advanced_params)
-            if base.get("wbf_auto", True):
-                base["wbf_iou"] = auto_wbf_iou(int(self.quality.get()), base["iou_nms"])
 
         # Persist AOIs to input (always if any)
         self._export_aois_to_input(imgs, force=False)
@@ -549,23 +578,48 @@ class App(tk.Tk):
         def work():
             try:
                 if use_legacy_pt:
-                    totals = run_legacy_pt(
-                        imgs=imgs, outdir=outdir, model_path=model,
-                        tile=int(base["tile"]), overlap=float(base["overlap"]),
-                        conf=float(base["conf"]), iou=float(base["iou_nms"]),
-                        selected_classes=self._selected_classes(),  # REAL IDs
-                        overlay_mode=self.overlay_mode.get(),
-                        draw_centroid=bool(self.draw_centroid.get()),
-                        aoi_mode=self.aoi_mode.get(),
-                        aoi_box_frac=float(self.aoi_box_frac.get()),
-                        aoi_map=self.aoi_map if self.use_aoi.get() else {},
-                        progress_cb=lambda pct, txt: self._tsafe(lambda: (self._smooth_to(pct), self.progress_label.set(txt))),
-                        stop_cb=lambda: self._stop,
-                        class_id_to_name=(self.class_names or None),
-                        logger=self._log
-                    )
+                    # prefer return_dets=True if implemented
+                    try:
+                        result = run_legacy_pt(
+                            imgs=imgs, outdir=outdir, model_path=model,
+                            tile=int(base["tile"]), overlap=float(base["overlap"]),
+                            conf=float(base["conf"]), iou=float(base["iou_nms"]),
+                            selected_classes=self._selected_classes(),  # REAL IDs
+                            overlay_mode=self.overlay_mode.get(),
+                            draw_centroid=bool(self.draw_centroid.get()),
+                            aoi_mode=self.aoi_mode.get(),
+                            aoi_box_frac=float(self.aoi_box_frac.get()),
+                            aoi_map=self.aoi_map if self.use_aoi.get() else {},
+                            progress_cb=lambda pct, txt: self._tsafe(lambda: (self._smooth_to(pct), self.progress_label.set(txt))),
+                            stop_cb=lambda: self._stop,
+                            class_id_to_name=(self.class_names or None),
+                            logger=self._log,
+                            return_dets=True
+                        )
+                        totals, dets_map = result
+                    except TypeError:
+                        totals = run_legacy_pt(
+                            imgs=imgs, outdir=outdir, model_path=model,
+                            tile=int(base["tile"]), overlap=float(base["overlap"]),
+                            conf=float(base["conf"]), iou=float(base["iou_nms"]),
+                            selected_classes=self._selected_classes(),
+                            overlay_mode=self.overlay_mode.get(),
+                            draw_centroid=bool(self.draw_centroid.get()),
+                            aoi_mode=self.aoi_mode.get(),
+                            aoi_box_frac=float(self.aoi_box_frac.get()),
+                            aoi_map=self.aoi_map if self.use_aoi.get() else {},
+                            progress_cb=lambda pct, txt: self._tsafe(lambda: (self._smooth_to(pct), self.progress_label.set(txt))),
+                            stop_cb=lambda: self._stop,
+                            class_id_to_name=(self.class_names or None),
+                            logger=self._log
+                        )
+                        dets_map = None
+
+                    # optional GeoJSON
+                    self._maybe_export_geojson(imgs, outdir, dets_map)
+
                 else:
-                    totals = self._run_engine_core(imgs, outdir, model, base)
+                    totals = self._run_engine_core(imgs, outdir, model, base, qname)
 
                 self._tsafe(lambda: self.progress_label.set(f"Done. Output: {outdir}"))
                 self._tsafe(lambda: self._log(f"Done. Totals: {totals}"))
@@ -588,7 +642,7 @@ class App(tk.Tk):
             pass
 
     # ---------- engine-core path ----------
-    def _run_engine_core(self, imgs, outdir: Path, model, base):
+    def _run_engine_core(self, imgs, outdir: Path, model, base, qname: str):
         cfg = InferConfig(
             model_path=model, engine=self.engine_var.get(), device=self.device_var.get(),
             conf=float(base["conf"]), iou=float(base["iou_nms"]), imgsz=int(base["tile"]),
@@ -597,7 +651,7 @@ class App(tk.Tk):
             annotate=bool(self.annotate.get()), draw_centroid=bool(self.draw_centroid.get()),
             use_tiling=True, tile=int(base["tile"]), overlap=float(base["overlap"]),
             use_wbf=bool(base.get("use_wbf", True)),
-            wbf_iou=float(base.get("wbf_iou", auto_wbf_iou(int(self.quality.get()), base["iou_nms"]))),
+            wbf_iou=float(base.get("wbf_iou", auto_wbf_iou(qname, base["iou_nms"])) if base.get("wbf_iou") not in (None, "") else auto_wbf_iou(qname, base["iou_nms"])),
             wbf_alpha=float(base.get("wbf_alpha", DEFAULT_WBF_ALPHA)),
             seam_band_factor=float(base.get("seam_band_factor", DEFAULT_SEAM_BAND_FACTOR)),
             seam_weight=float(base.get("seam_weight", DEFAULT_SEAM_WEIGHT)),
@@ -606,23 +660,77 @@ class App(tk.Tk):
         engine = ModelEngine(cfg)
         self._log(f"[engine] names={engine.available_classes()}")
 
+        # prefer return_dets=True if engine supports it
         def pcb(i, n, eta_sec):
             frac = i / max(1, n)
             m = int(eta_sec // 60); s = int(eta_sec % 60)
             self._smooth_to(frac * 100.0)
             self.progress_label.set(f"Image {i}/{n} — ETA {m:02d}:{s:02d}")
 
-        per_image, totals = engine.predict_batch(
-            imgs, aoi_map=self.aoi_map if self.use_aoi.get() else {},
-            outdir=outdir, annotate=cfg.annotate,
-            progress_cb=pcb, abort_cb=lambda: self._stop
-        )
+        dets_map = None
+        try:
+            per_image, totals, dets_map = engine.predict_batch(
+                imgs, aoi_map=self.aoi_map if self.use_aoi.get() else {},
+                outdir=outdir, annotate=cfg.annotate,
+                progress_cb=pcb, abort_cb=lambda: self._stop, return_dets=True
+            )
+        except TypeError:
+            per_image, totals = engine.predict_batch(
+                imgs, aoi_map=self.aoi_map if self.use_aoi.get() else {},
+                outdir=outdir, annotate=cfg.annotate,
+                progress_cb=pcb, abort_cb=lambda: self._stop
+            )
+
+        # CSV / JSON
         class_names = sorted({k for _, cnt in per_image for k in cnt.keys()})
         rows = [[path] + [cnt.get(c, 0) for c in class_names] for path, cnt in per_image]
         save_csv(rows, header=["image_path"] + class_names, out_path=outdir / "results_per_image.csv")
         save_json(totals, out_path=outdir / "results_totals.json")
         save_run_metadata(outdir, imgs, cfg, totals)
+
+        # optional GeoJSON
+        self._maybe_export_geojson(imgs, outdir, dets_map)
+
         return totals
+
+    # ---------- GeoJSON helper ----------
+    def _maybe_export_geojson(self, imgs, outdir: Path, dets_map):
+        if export_geojson_for_image is None:
+            self._log("[GEO] geo_export.py not found — skipping GeoJSON.")
+            return
+        if not dets_map:
+            self._log("[GEO] No detection details provided by engine — skipping GeoJSON.")
+            return
+
+        for p in imgs:
+            try:
+                dets = self._normalize_dets(dets_map.get(str(p)) or dets_map.get(p) or [])
+                aois = self.aoi_map.get(str(p), [])
+                geo = export_geojson_for_image(p, dets, aois, out_dir=outdir, crs_hint=None)
+                if geo:
+                    self._log(f"[GEO] Wrote {geo.name}")
+            except Exception as e:
+                self._log(f"[GEO] export failed for {Path(p).name}: {e}")
+
+    @staticmethod
+    def _normalize_dets(raw_list):
+        """Best-effort normalization to [{'cls','conf','bbox','centroid'}]."""
+        norm = []
+        for d in (raw_list or []):
+            try:
+                cls = d.get("cls") or d.get("class") or d.get("label")
+                conf = float(d.get("conf", d.get("confidence", 0.0)))
+                bbox = d.get("bbox") or d.get("box") or d.get("xyxy")
+                if not bbox and "xywh" in d and "img_w" in d and "img_h" in d:
+                    x,y,w,h = d["xywh"]; bbox = [x, y, x+w, y+h]
+                if not bbox or len(bbox) != 4: 
+                    continue
+                x1,y1,x2,y2 = [float(v) for v in bbox]
+                cx, cy = d.get("centroid", ((x1+x2)/2.0, (y1+y2)/2.0))
+                norm.append({"cls": cls, "conf": conf, "bbox": [x1,y1,x2,y2], "centroid": [cx,cy]})
+            except Exception:
+                continue
+        return norm
 
     # ---------- classes helpers ----------
     def _selected_classes(self):

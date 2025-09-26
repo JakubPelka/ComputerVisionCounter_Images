@@ -1,4 +1,4 @@
-# legacy_pt_runner.py — legacy PyTorch tiling path; per-tile progress; boxes_conf shows class+conf; centroid dots.
+# legacy_pt_runner.py — legacy PyTorch tiling path; per-tile progress; boxes_conf shows class+conf; centroid dots; optional dets_map for GeoJSON.
 from __future__ import annotations
 import time, json
 from pathlib import Path
@@ -87,8 +87,14 @@ def run_legacy_pt(
     tile: int, overlap: float, conf: float, iou: float,
     selected_classes, overlay_mode: str, draw_centroid: bool,
     aoi_mode: str, aoi_box_frac: float, aoi_map: dict,
-    progress_cb, stop_cb, class_id_to_name: dict|None, logger
+    progress_cb, stop_cb, class_id_to_name: dict|None, logger,
+    return_dets: bool = False
 ):
+    """
+    When return_dets=True, returns (totals, dets_map) where:
+      dets_map[image_path] = [{'cls': name, 'conf': float, 'bbox':[x1,y1,x2,y2], 'centroid':[cx,cy]}, ...]
+    Otherwise returns totals only (backward compatible).
+    """
     if cv2 is None or np is None or YOLO is None:
         raise RuntimeError("Legacy PT path requires opencv-python, numpy, ultralytics installed.")
     outdir.mkdir(parents=True, exist_ok=True)
@@ -104,6 +110,7 @@ def run_legacy_pt(
     per_rows_aoi = []
     all_aoi_names = set()
     all_class_names = set()
+    dets_map = {} if return_dets else None
 
     N = len(imgs)
     t0 = time.time()
@@ -184,10 +191,18 @@ def run_legacy_pt(
                         kidx.append(i)
                 kept_idx = kidx
 
+        # det list for this image (for GeoJSON export)
+        det_list = []
+
         for i in kept_idx:
             cid = all_cids[i]
             cname = id2name.get(cid, str(cid))
             counts_global[cname] = counts_global.get(cname, 0) + 1
+            if return_dets:
+                bb = all_boxes[i]
+                cx, cy = bbox_center(bb)
+                det_list.append({"cls": cname, "conf": float(all_scores[i]),
+                                 "bbox": [float(x) for x in bb], "centroid": [float(cx), float(cy)]})
             if masks:
                 for aoi_name, m in masks:
                     hit = False
@@ -205,10 +220,13 @@ def run_legacy_pt(
                         counts_aoi_cls[(aoi_name, cname)] = counts_aoi_cls.get((aoi_name, cname), 0) + 1
                         all_aoi_names.add(aoi_name)
 
+        if return_dets:
+            dets_map[str(p)] = det_list
+
         for nm, v in counts_global.items():
             totals[nm] = totals.get(nm,0)+v
 
-        # JSON per-image
+        # JSON per-image for annotations folder
         dets = []
         for i in kept_idx:
             bb, sc, cc = all_boxes[i], all_scores[i], all_cids[i]
@@ -240,7 +258,7 @@ def run_legacy_pt(
                             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,255,0), 1, cv2.LINE_AA)
             if draw_centroid or overlay_mode == "centroid":
                 cx,cy = map(int, bbox_center(all_boxes[i]))
-                cv2.circle(preview, (cx,cy), 3, (0,255,0), -1)
+                cv2.circle(preview, (cx,cy), 3, (255,255,255), -1)
 
         # bottom-right summaries
         W = preview.shape[1]; H = preview.shape[0]
@@ -292,4 +310,6 @@ def run_legacy_pt(
             rows.append(row)
         save_csv(rows, header=header, out_path=outdir/"results_per_image_by_aoi.csv")
 
+    if return_dets:
+        return totals, dets_map
     return totals

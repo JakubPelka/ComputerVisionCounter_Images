@@ -4,7 +4,7 @@
 # 2) If offline/failure -> OFFLINE from ./wheels
 # 3) Prefer ONNX Runtime GPU; if it fails, fallback to CPU
 # 4) Verify YOLOv11 support (C3k2); if missing -> force (re)install ultralytics
-# 5) Run target app (default: unidrone_app.py; override: pass filename as arg)
+# 5) Run target app (default: start_app.py; override: pass filename as arg)
 
 from __future__ import annotations
 import sys, subprocess, os, socket, runpy
@@ -17,21 +17,21 @@ PKGS_DIR = BASE / "_pkgs"
 WHEELS_DIR = BASE / "wheels"
 
 # === target app ===
-DEFAULT_APP = "unidrone_app.py"  # możesz uruchomić video: python bootstrap_env.py unidrone_video.py
+DEFAULT_APP = "start_app.py"
 APP_PATH = BASE / (sys.argv[1] if len(sys.argv) > 1 else DEFAULT_APP)
 
 # === Requirements ===
-# Torch/vision z CPU indexu – sprawdzone na Py 3.11/3.12 (CPU)
+# Torch/vision from CPU index – tested on Py 3.11/3.12 (CPU)
 REQUIREMENTS_TORCH = [
     "torch==2.3.1+cpu",
     "torchvision==0.18.1+cpu",
 ]
 PYTORCH_CPU_INDEX = "https://download.pytorch.org/whl/cpu"
 
-# Reszta z PyPI – UWAGA: ultralytics wersja z obsługą YOLOv11
-# (USUWAMY onnxruntime z listy; instalujemy je osobno z preferencją GPU)
+# Rest from PyPI
+# NOTE: we install onnxruntime separately (prefer GPU), see below.
 REQUIREMENTS_REST = [
-    "ultralytics>=8.3.0",      # YOLOv11 (m.in. warstwa C3k2)
+    "ultralytics>=8.3.0",      # YOLOv11 (C3k2 module)
     "opencv-python>=4.8.0",
     "numpy>=1.26.0,<2.0.0",
     "pandas>=2.1.0",
@@ -41,6 +41,7 @@ REQUIREMENTS_REST = [
     "PyYAML>=6.0",
     "scipy>=1.11.0",
     "onnx>=1.15.0",
+    "tifffile>=2023.4.12",     # GeoTIFF support for GeoJSON export
 ]
 
 SMOKE_IMPORTS = [
@@ -54,7 +55,8 @@ SMOKE_IMPORTS = [
     ("tqdm", None),
     ("yaml", None),
     ("scipy", None),
-    ("onnxruntime", None),  # ważne by sprawdzić obecność ORT
+    ("onnxruntime", None),  # check ORT presence
+    ("tifffile", None),
 ]
 
 def is_online(host="pypi.org", port=443, timeout=2.5) -> bool:
@@ -91,10 +93,7 @@ def have_all_imports(verbose=True) -> bool:
     return ok
 
 def ultralytics_supports_yolo11() -> bool:
-    """
-    YOLOv11 używa m.in. bloku C3k2 w ultralytics.nn.modules.block.
-    Jeśli atrybutu brak -> pakiet jest za stary.
-    """
+    """YOLOv11 uses C3k2 in ultralytics.nn.modules.block."""
     try:
         add_pkgs_to_syspath()
         from ultralytics.nn.modules import block as ublock
@@ -103,10 +102,7 @@ def ultralytics_supports_yolo11() -> bool:
         return False
 
 def install_onnxruntime_prefer_gpu_online() -> None:
-    """
-    Domyślnie próbujemy zainstalować onnxruntime-gpu.
-    Jeśli się nie uda -> instalujemy onnxruntime (CPU).
-    """
+    """Try onnxruntime-gpu first; fall back to CPU."""
     print("\n=== ONNX Runtime (prefer GPU) — ONLINE ===")
     rc_gpu = run_pip(["install", "--target", str(PKGS_DIR), "--upgrade", "onnxruntime-gpu"])
     if rc_gpu == 0:
@@ -118,9 +114,7 @@ def install_onnxruntime_prefer_gpu_online() -> None:
         print("[ERR] onnxruntime (CPU) install failed as well.")
 
 def install_onnxruntime_prefer_gpu_offline() -> None:
-    """
-    OFFLINE: próbujemy koło onnxruntime-gpu*.whl; jeśli brak/nie pasuje, bierzemy onnxruntime*.whl.
-    """
+    """OFFLINE: prefer onnxruntime-gpu*.whl; else onnxruntime*.whl."""
     print("\n=== ONNX Runtime (prefer GPU) — OFFLINE ===")
     if not WHEELS_DIR.exists():
         print("[ERR] ./wheels directory not found for offline ORT.")
@@ -136,8 +130,7 @@ def install_onnxruntime_prefer_gpu_offline() -> None:
             return
         print("[WARN] onnxruntime-gpu wheel failed, trying CPU…")
 
-    # CPU fallback
-    # Uwaga: odfiltruj już ewentualne GPU koła, by nie instalować znów
+    # CPU fallback; filter out gpu wheels
     whl_cpu = [p for p in whl_cpu if "gpu" not in p.name.lower()]
     if whl_cpu:
         rc2 = run_pip(["install", "--no-index", "--find-links", str(WHEELS_DIR),
@@ -177,7 +170,6 @@ def install_offline_from_wheels() -> bool:
 
     PKGS_DIR.mkdir(parents=True, exist_ok=True)
 
-    # Zainstaluj resztę (bez ORT — instalujemy poniżej preferując GPU)
     rc = run_pip([
         "install", "--no-index", "--find-links", str(WHEELS_DIR),
         "--target", str(PKGS_DIR),
@@ -185,7 +177,6 @@ def install_offline_from_wheels() -> bool:
     ])
     if rc != 0:
         print("[WARN] Offline constraints failed, trying all *.whl directly (excluding ORT for now)…")
-        # Zainstaluj wszystkie *.whl poza onnxruntime*, a ORT doinstalujemy osobno preferując GPU:
         wheel_files = [p for p in sorted(WHEELS_DIR.glob("*.whl")) if not p.name.startswith("onnxruntime")]
         if not wheel_files:
             print("[ERR] No .whl files in ./wheels.")
@@ -195,15 +186,13 @@ def install_offline_from_wheels() -> bool:
             print("[ERR] Offline install from wheel files failed.")
             return False
 
-    # ONNX Runtime: prefer GPU, fallback CPU (z kół)
+    # ONNX Runtime: prefer GPU, fallback CPU
     install_onnxruntime_prefer_gpu_offline()
 
     return have_all_imports(verbose=True)
 
 def force_update_ultralytics(online: bool) -> bool:
-    """
-    Wymusza reinstall ultralytics do wersji z YOLOv11.
-    """
+    """Force reinstall ultralytics to a YOLOv11-capable version."""
     print("\n=== Force (re)install ultralytics for YOLOv11 ===")
     run_pip(["uninstall", "-y", "ultralytics"])
 
@@ -270,7 +259,7 @@ def main():
             print("\n[FATAL] Could not install all required packages.")
             sys.exit(1)
 
-    # Wypisz dostępność providerów ONNX Runtime (GPU vs CPU)
+    # ONNX Runtime provider info
     print_ort_provider_info()
 
     # 1) YOLOv11 sanity (C3k2 present?)
