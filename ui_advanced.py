@@ -1,117 +1,343 @@
-# ui_advanced.py — Advanced options dialog (dedup preset included)
+# ui_advanced.py — Advanced settings dialog (presets, contextual help, import/export)
 from __future__ import annotations
+import json
+from pathlib import Path
 import tkinter as tk
-from tkinter import messagebox
+from tkinter import ttk, filedialog, messagebox
 
-DEFAULTS = dict(
-    DEFAULT_WBF_ALPHA=0.20,
-    DEFAULT_SEAM_IOU_LOW=0.30,
-    DEFAULT_SEAM_BAND_FACTOR=0.10,
-    DEFAULT_SEAM_WEIGHT=0.35,
-    DEFAULT_MARGIN_WEIGHT=0.25,
-)
+# Keys used by App.advanced_params
+_PARAM_KEYS = [
+    "tile", "overlap", "conf", "iou_nms",
+    "use_wbf", "wbf_auto", "wbf_iou", "wbf_alpha",
+    "seam_iou_low", "seam_band_factor", "seam_weight",
+    "margin_weight",
+]
 
-def auto_wbf_iou(q, nms): return 0.60 if int(q) == 5 else max(0.55, float(nms))
+# Built-in quality presets (aligned with start_app QUALITY_PRESETS w/ friendly names)
+_BUILTIN_PRESETS = {
+    "Fast":     {"tile": 896,  "overlap": 0.25, "conf": 0.45, "iou_nms": 0.60},
+    "Balanced": {"tile": 1024, "overlap": 0.30, "conf": 0.50, "iou_nms": 0.55},
+    "Ultra":    {"tile": 2560, "overlap": 0.60, "conf": 0.75, "iou_nms": 0.40},
+}
+# Defaults for fusion & seam handling that pair well with any preset
+_DEFAULT_FUSION = {"use_wbf": True, "wbf_auto": True, "wbf_alpha": 0.20}
+_DEFAULT_SEAM   = {"seam_iou_low": 0.30, "seam_band_factor": 0.10, "seam_weight": 0.35, "margin_weight": 0.25}
+
+# Anti-seam / dedup macro (doesn't close the dialog)
+_ANTI_SEAM_PRESET = {
+    "use_wbf": True,
+    "wbf_alpha": 0.20,
+    "wbf_auto": True,   # let app compute default if user doesn’t set wbf_iou
+    # "wbf_iou": 0.60,  # set this AND wbf_auto=False if you want fixed value
+    "seam_iou_low": 0.30,
+    "seam_band_factor": 0.10,
+    "seam_weight": 0.35,
+    "margin_weight": 0.25,
+}
+
+# Context help for the info panel on the right
+_HELP = {
+    "tile": "Image size (pixels) fed into the model. Larger → better quality but slower/more RAM/VRAM.",
+    "overlap": "Tile overlap fraction (0–1). Higher reduces seam artifacts; try 0.45+ for high quality.",
+    "conf": "Minimum confidence (0–1) for a detection to be kept. Higher = fewer false positives.",
+    "iou_nms": "IoU threshold for Non-Max Suppression. Lower merges more overlaps; 0.50–0.60 is common.",
+    "use_wbf": "Weighted Boxes Fusion combines overlapping boxes from tiles for cleaner results.",
+    "wbf_auto": "Let the app pick a sensible WBF IoU from quality level; turn off to set your own.",
+    "wbf_iou": "Matching IoU used by WBF when Auto is off. 0.55–0.65 usually works well.",
+    "wbf_alpha": "How strongly WBF blends boxes. 0.20 is a safe default.",
+    "seam_iou_low": "If two boxes across a tile border overlap less than this, treat as seam conflict.",
+    "seam_band_factor": "Relative width of the seam band along tile edges used for deduplication.",
+    "seam_weight": "Voting weight for boxes affected by seams/borders.",
+    "margin_weight": "Voting weight for boxes near the image margins.",
+    "preset": "Select a built-in starting point. You can still tweak values afterwards.",
+}
+
+def _get(app, key, default=None):
+    try:
+        return app.advanced_params.get(key, default)
+    except Exception:
+        return default
+
+def _float(v, default=0.0):
+    try:
+        return float(v)
+    except Exception:
+        return default
+
+def _int(v, default=0):
+    try:
+        return int(float(v))
+    except Exception:
+        return default
+
+def _apply_to_app(app, values: dict, log_msg: str | None = None):
+    for k in _PARAM_KEYS:
+        if k in values:
+            app.advanced_params[k] = values[k]
+    app.advanced_override = True
+    try:
+        app._update_preset_label()
+    except Exception:
+        pass
+    if log_msg:
+        try: app._log(log_msg)
+        except Exception: pass
+
 
 def open_advanced(app):
-    QUALITY_PRESETS = app.__dict__.get("QUALITY_PRESETS", None) or {
-        1: {"tile": 640,  "overlap": 0.15, "conf": 0.40, "iou_nms": 0.65, "use_wbf": True},
-        2: {"tile": 896,  "overlap": 0.25, "conf": 0.45, "iou_nms": 0.60, "use_wbf": True},
-        3: {"tile": 1024, "overlap": 0.30, "conf": 0.50, "iou_nms": 0.55, "use_wbf": True},
-        4: {"tile": 1280, "overlap": 0.45, "conf": 0.60, "iou_nms": 0.50, "use_wbf": True},
-        5: {"tile": 2560, "overlap": 0.60, "conf": 0.75, "iou_nms": 0.40, "use_wbf": True},
-    }
-    DEF = DEFAULTS
+    """Advanced dialog; multiple opens reuse one window if present."""
+    existing = getattr(app, "_advanced_win", None)
+    if existing and existing.winfo_exists():
+        existing.deiconify(); existing.lift(); existing.focus_force()
+        return
 
-    win = tk.Toplevel(app); win.title("Advanced options"); win.geometry("560x380")
-    frame = tk.Frame(win); frame.pack(fill="both", expand=True, padx=8, pady=8)
+    win = tk.Toplevel(app)
+    app._advanced_win = win
+    win.title("Advanced options")
+    win.transient(app)
+    win.geometry("860x640")          # bigger so buttons stay visible
+    try:
+        win.minsize(800, 600)
+    except Exception:
+        pass
 
-    # Left: slider + label. Right: fields + actions.
-    left = tk.Frame(frame); left.pack(side="left", fill="both", expand=True)
-    right = tk.Frame(frame); right.pack(side="right", fill="y")
+    # --- form variables bound to app.advanced_params
+    var_tile   = tk.StringVar(value=str(_get(app, "tile", 1024)))
+    var_ovl    = tk.StringVar(value=str(_get(app, "overlap", 0.30)))
+    var_conf   = tk.StringVar(value=str(_get(app, "conf", 0.50)))
+    var_iou    = tk.StringVar(value=str(_get(app, "iou_nms", 0.55)))
 
-    p = QUALITY_PRESETS.get(int(app.quality.get()), QUALITY_PRESETS[5])
-    tk.Label(left, text="Quality (1=faster, 5=ULTRA)").pack(anchor="w")
-    sc = tk.Scale(left, from_=1, to=5, orient="horizontal", variable=app.quality, showvalue=True,
-                  command=lambda _=None: app._update_preset_label(), length=260)
-    sc.pack(anchor="w")
-    preset_txt = tk.StringVar(value=f"tile={p['tile']} overlap={p['overlap']} conf={p['conf']} nms={p['iou_nms']} WBF={p['use_wbf']}")
-    lbl = tk.Label(left, textvariable=preset_txt, fg="#555"); lbl.pack(anchor="w", pady=(6,0))
-    def _refresh_label(*_):
-        pp = QUALITY_PRESETS.get(int(app.quality.get()), QUALITY_PRESETS[5])
-        preset_txt.set(f"tile={pp['tile']} overlap={pp['overlap']} conf={pp['conf']} nms={pp['iou_nms']} WBF={pp['use_wbf']}")
-    app.quality.trace_add("write", _refresh_label)
+    var_use_wbf = tk.BooleanVar(value=bool(_get(app, "use_wbf", True)))
+    var_wbf_auto= tk.BooleanVar(value=bool(_get(app, "wbf_auto", True)))
+    var_wbf_iou = tk.StringVar(value="" if _get(app, "wbf_iou", None) in (None, "") else str(_get(app,"wbf_iou")))
+    var_wbf_alp = tk.StringVar(value=str(_get(app, "wbf_alpha", 0.20)))
 
-    def row(lbl, var):
-        f = tk.Frame(right); f.pack(fill="x", pady=2, anchor="e")
-        tk.Label(f, text=lbl, width=22, anchor="e").pack(side="left")
-        tk.Entry(f, textvariable=var, width=10).pack(side="left"); return f
+    var_seam_iou_low  = tk.StringVar(value=str(_get(app, "seam_iou_low", 0.30)))
+    var_seam_band     = tk.StringVar(value=str(_get(app, "seam_band_factor", 0.10)))
+    var_seam_weight   = tk.StringVar(value=str(_get(app, "seam_weight", 0.35)))
+    var_margin_weight = tk.StringVar(value=str(_get(app, "margin_weight", 0.25)))
 
-    def current_auto_wbf():
-        pp = QUALITY_PRESETS.get(int(app.quality.get()), QUALITY_PRESETS[5])
-        return auto_wbf_iou(int(app.quality.get()), float(pp["iou_nms"]))
+    # -------- layout: left form + right help panel
+    root = tk.Frame(win); root.pack(fill="both", expand=True, padx=10, pady=10)
+    left = tk.Frame(root); left.pack(side="left", fill="both", expand=True)
+    right = tk.Frame(root, width=260); right.pack(side="left", fill="y", padx=(12,0))
+    right.pack_propagate(False)
+    help_title = tk.Label(right, text="Help", font=("TkDefaultFont", 10, "bold"))
+    help_title.pack(anchor="w")
+    help_text = tk.Label(right, text=_HELP["preset"], wraplength=240, justify="left", fg="#444")
+    help_text.pack(fill="x", pady=(4,0))
 
-    base = app.advanced_params if app.advanced_override else {
-        **p, "wbf_alpha": DEF["DEFAULT_WBF_ALPHA"], "wbf_iou": None, "wbf_auto": True,
-        "seam_iou_low": DEF["DEFAULT_SEAM_IOU_LOW"], "seam_band_factor": DEF["DEFAULT_SEAM_BAND_FACTOR"],
-        "seam_weight": DEF["DEFAULT_SEAM_WEIGHT"], "margin_weight": DEF["DEFAULT_MARGIN_WEIGHT"]
-    }
-    S = lambda k, d="": tk.StringVar(value=str(base.get(k, d)))
-    var_tile, var_ov, var_conf, var_nms = S("tile"), S("overlap"), S("conf"), S("iou_nms")
-    var_wbf = tk.BooleanVar(value=bool(base.get("use_wbf", True)))
-    var_alpha = S("wbf_alpha", DEF["DEFAULT_WBF_ALPHA"])
-    var_wbf_auto = tk.BooleanVar(value=bool(base.get("wbf_auto", True)))
-    var_wbf_iou = tk.StringVar(value=str(current_auto_wbf()) if var_wbf_auto.get() else ("" if base.get("wbf_iou", None) is None else str(base["wbf_iou"])))
-    var_seam_iou_low, var_seam_band, var_seam_w, var_margin_w = S("seam_iou_low", DEF["DEFAULT_SEAM_IOU_LOW"]), S("seam_band_factor", DEF["DEFAULT_SEAM_BAND_FACTOR"]), S("seam_weight", DEF["DEFAULT_SEAM_WEIGHT"]), S("margin_weight", DEF["DEFAULT_MARGIN_WEIGHT"])
+    def set_help(key: str):
+        help_text.config(text=_HELP.get(key, ""))
 
-    for lbltxt, var in [("Tile size (px)", var_tile), ("Overlap (0..1)", var_ov), ("Confidence", var_conf), ("IoU NMS", var_nms)]:
-        row(lbltxt, var)
-    tk.Checkbutton(right, text="Use WBF dedup", variable=var_wbf).pack(anchor="e")
-    rf = tk.Frame(right); rf.pack(anchor="e")
-    tk.Label(rf, text="WBF alpha", width=22, anchor="e").pack(side="left"); tk.Entry(rf, textvariable=var_alpha, width=10).pack(side="left")
-    r2 = tk.Frame(right); r2.pack(anchor="e")
-    tk.Checkbutton(r2, text="Auto WBF IoU", variable=var_wbf_auto,
-                   command=lambda: ent_wbf.config(state=("disabled" if var_wbf_auto.get() else "normal"))).pack(side="left")
-    ent_wbf = tk.Entry(r2, textvariable=var_wbf_iou, width=10); ent_wbf.pack(side="left")
-    ent_wbf.config(state=("disabled" if var_wbf_auto.get() else "normal"))
-    for lbltxt, var in [("Seam low IoU", var_seam_iou_low), ("Seam band factor", var_seam_band), ("Weight margin", var_margin_w), ("Weight seam dist", var_seam_w)]:
-        row(lbltxt, var)
+    # ---- Preset row (with import/export)
+    pr = tk.LabelFrame(left, text="Presets"); pr.pack(fill="x", pady=(0,8))
+    tk.Label(pr, text="Preset:").pack(side="left", padx=(6,2))
+    var_preset = tk.StringVar(value="Custom")
+    cb = ttk.Combobox(pr, values=["Fast","Balanced","Ultra","Custom"], textvariable=var_preset, state="readonly", width=12)
+    cb.pack(side="left")
+    cb.bind("<<ComboboxSelected>>", lambda _e: _apply_builtin(var_preset.get()))
+    _add_help_bindings(cb, lambda: set_help("preset"))
 
-    btns = tk.Frame(win); btns.pack(fill="x", pady=8)
-    def apply_override():
-        try:
-            cur = QUALITY_PRESETS.get(int(app.quality.get()), QUALITY_PRESETS[5])
-            def get_or(v, cast, key): s=v.get().strip(); return cast(s) if s!="" else cast(cur[key])
-            app.advanced_params = {
-                "tile": get_or(var_tile, int, "tile"),
-                "overlap": get_or(var_ov, float, "overlap"),
-                "conf": get_or(var_conf, float, "conf"),
-                "iou_nms": get_or(var_nms, float, "iou_nms"),
-                "use_wbf": bool(var_wbf.get()),
-                "wbf_alpha": float(var_alpha.get()) if var_alpha.get().strip()!="" else DEF["DEFAULT_WBF_ALPHA"],
-                "wbf_iou": (None if var_wbf_auto.get() else (float(var_wbf_iou.get()) if var_wbf_iou.get().strip()!="" else None)),
-                "wbf_auto": bool(var_wbf_auto.get()),
-                "seam_iou_low": float(var_seam_iou_low.get()) if var_seam_iou_low.get().strip()!="" else DEF["DEFAULT_SEAM_IOU_LOW"],
-                "seam_band_factor": float(var_seam_band.get()) if var_seam_band.get().strip()!="" else DEF["DEFAULT_SEAM_BAND_FACTOR"],
-                "seam_weight": float(var_seam_w.get()) if var_seam_w.get().strip()!="" else DEF["DEFAULT_SEAM_WEIGHT"],
-                "margin_weight": float(var_margin_w.get()) if var_margin_w.get().strip()!="" else DEF["DEFAULT_MARGIN_WEIGHT"],
-            }
-            app.advanced_override = True
-            app._log("[ADV] Override enabled."); win.destroy()
-        except Exception as e:
-            messagebox.showerror("Advanced", str(e))
-    def reset_to_preset():
-        app.advanced_override = False; app._log("[ADV] Preset from slider restored."); win.destroy()
+    tk.Button(pr, text="Load preset…", command=lambda: _import_preset(win, app,
+            _binds_to_dict(var_tile,var_ovl,var_conf,var_iou,var_use_wbf,var_wbf_auto,var_wbf_iou,var_wbf_alp,
+                           var_seam_iou_low,var_seam_band,var_seam_weight,var_margin_weight))
+             ).pack(side="left", padx=(10,0))
+    tk.Button(pr, text="Save preset as…", command=lambda: _export_preset(win, app,
+            _binds_to_dict(var_tile,var_ovl,var_conf,var_iou,var_use_wbf,var_wbf_auto,var_wbf_iou,var_wbf_alp,
+                           var_seam_iou_low,var_seam_band,var_seam_weight,var_margin_weight))
+             ).pack(side="left", padx=6)
+
+    # ---- Inference / tiling group
+    g1 = tk.LabelFrame(left, text="Inference & Tiling"); g1.pack(fill="x", pady=6)
+    _row(g1, "Tile size (imgsz):", var_tile, lambda: set_help("tile"))
+    _row(g1, "Tile overlap (0–1):", var_ovl, lambda: set_help("overlap"))
+    _row(g1, "Conf threshold (0–1):", var_conf, lambda: set_help("conf"))
+    _row(g1, "NMS IoU (0–1):", var_iou, lambda: set_help("iou_nms"))
+
+    # ---- WBF group (stacked checkboxes)
+    g2 = tk.LabelFrame(left, text="Weighted Boxes Fusion (WBF)"); g2.pack(fill="x", pady=6)
+    cb_use = tk.Checkbutton(g2, text="Use WBF", variable=var_use_wbf, command=lambda: set_help("use_wbf"))
+    cb_use.pack(anchor="w", padx=6, pady=(4,2))
+    cb_use.bind("<FocusIn>", lambda _e: set_help("use_wbf"))
+
+    cb_auto = tk.Checkbutton(g2, text="Auto WBF IoU", variable=var_wbf_auto, command=lambda: set_help("wbf_auto"))
+    cb_auto.pack(anchor="w", padx=6, pady=(0,4))
+    cb_auto.bind("<FocusIn>", lambda _e: set_help("wbf_auto"))
+
+    _row(g2, "WBF IoU (if not auto):", var_wbf_iou, lambda: set_help("wbf_iou"))
+    _row(g2, "WBF alpha:", var_wbf_alp, lambda: set_help("wbf_alpha"))
+
+    # ---- Seam / dedup group
+    g3 = tk.LabelFrame(left, text="Seam/Border de-duplication"); g3.pack(fill="x", pady=6)
+    _row(g3, "Low IoU with seam (0–1):", var_seam_iou_low, lambda: set_help("seam_iou_low"))
+    _row(g3, "Seam band factor (0–1):", var_seam_band, lambda: set_help("seam_band_factor"))
+    _row(g3, "Seam vote weight (0–1):", var_seam_weight, lambda: set_help("seam_weight"))
+    _row(g3, "Margin vote weight (0–1):", var_margin_weight, lambda: set_help("margin_weight"))
+
+    # ---- Actions row
+    ar = tk.Frame(left); ar.pack(fill="x", pady=(10,0))
+    status = tk.Label(ar, text="", fg="#2a7"); status.pack(side="left")
+
+    def apply_and_stay(msg=None):
+        vals = _binds_to_dict(var_tile,var_ovl,var_conf,var_iou,var_use_wbf,var_wbf_auto,var_wbf_iou,var_wbf_alp,
+                              var_seam_iou_low,var_seam_band,var_seam_weight,var_margin_weight)
+        # validation
+        vals["tile"] = _int(vals["tile"], 1024)
+        vals["overlap"] = max(0.0, min(1.0, _float(vals["overlap"], 0.3)))
+        vals["conf"] = max(0.0, min(1.0, _float(vals["conf"], 0.5)))
+        vals["iou_nms"] = max(0.0, min(1.0, _float(vals["iou_nms"], 0.55)))
+        vals["use_wbf"] = bool(vals["use_wbf"])
+        vals["wbf_auto"] = bool(vals["wbf_auto"])
+        vals["wbf_alpha"] = max(0.0, min(1.0, _float(vals["wbf_alpha"], 0.2)))
+        wbf_iou_txt = vals.get("wbf_iou", "")
+        vals["wbf_iou"] = None if (wbf_iou_txt in ("", None) or vals["wbf_auto"]) else max(0.0, min(1.0, _float(wbf_iou_txt, 0.6)))
+        vals["seam_iou_low"] = max(0.0, min(1.0, _float(vals["seam_iou_low"], 0.30)))
+        vals["seam_band_factor"] = max(0.0, min(1.0, _float(vals["seam_band_factor"], 0.10)))
+        vals["seam_weight"] = max(0.0, min(1.0, _float(vals["seam_weight"], 0.35)))
+        vals["margin_weight"] = max(0.0, min(1.0, _float(vals["margin_weight"], 0.25)))
+        _apply_to_app(app, vals, log_msg=msg or "[ADV] Parameters applied.")
+        status.config(text="Applied.", fg="#2a7")
+
+    def ok_and_close():
+        apply_and_stay(msg="[ADV] Parameters applied.")
+        try: win.destroy()
+        except Exception: pass
+
+    def cancel():
+        try: win.destroy()
+        except Exception: pass
+
     def apply_anti_seam():
-        app.advanced_params = {
-            "tile": int(var_tile.get()) if var_tile.get().strip() else QUALITY_PRESETS[int(app.quality.get())]["tile"],
-            "overlap": 0.55, "conf": float(var_conf.get() or 0.5),
-            "iou_nms": float(var_nms.get() or 0.55),
-            "use_wbf": True, "wbf_alpha": 0.35, "wbf_iou": 0.60, "wbf_auto": False,
-            "seam_iou_low": 0.40, "seam_band_factor": 0.12, "seam_weight": 0.45, "margin_weight": 0.30,
-        }
-        app.advanced_override = True; app._log("[ADV] Anti-seam preset applied."); win.destroy()
+        # Overlay the macro and reflect it in UI (keep dialog open)
+        for k, v in _ANTI_SEAM_PRESET.items():
+            if k == "wbf_iou" and v is None:
+                continue
+            if k == "use_wbf": var_use_wbf.set(bool(v))
+            elif k == "wbf_auto": var_wbf_auto.set(bool(v))
+            elif k == "wbf_iou": var_wbf_iou.set("" if v is None else str(v))
+            elif k == "wbf_alpha": var_wbf_alp.set(str(v))
+            elif k == "seam_iou_low": var_seam_iou_low.set(str(v))
+            elif k == "seam_band_factor": var_seam_band.set(str(v))
+            elif k == "seam_weight": var_seam_weight.set(str(v))
+            elif k == "margin_weight": var_margin_weight.set(str(v))
+        apply_and_stay(msg="[ADV] Anti-seam preset applied.")
 
-    tk.Button(btns, text="Apply override", command=apply_override).pack(side="left", padx=6)
-    tk.Button(btns, text="Use preset", command=reset_to_preset).pack(side="left", padx=6)
-    tk.Button(btns, text="Anti-seam (dedup)", command=apply_anti_seam).pack(side="right", padx=6)
+    tk.Button(ar, text="Apply", command=apply_and_stay).pack(side="right")
+    tk.Button(ar, text="OK", command=ok_and_close).pack(side="right", padx=6)
+    tk.Button(ar, text="Cancel", command=cancel).pack(side="right")
+    tk.Button(ar, text="Apply anti-seam dedup", command=apply_anti_seam).pack(side="left")
+
+    # keep dialog above main (initially)
+    win.lift()
+    try:
+        win.attributes("-topmost", True)
+        win.after(250, lambda: win.attributes("-topmost", False))
+    except Exception:
+        pass
+
+    # -- internal: apply built-in preset --
+    def _apply_builtin(name: str):
+        base = _BUILTIN_PRESETS.get(name)
+        if not base:
+            set_help("preset"); return
+        # fill fields
+        var_tile.set(str(base["tile"]))
+        var_ovl.set(str(base["overlap"]))
+        var_conf.set(str(base["conf"]))
+        var_iou.set(str(base["iou_nms"]))
+        # pair with fusion & seam defaults
+        var_use_wbf.set(bool(_DEFAULT_FUSION["use_wbf"]))
+        var_wbf_auto.set(bool(_DEFAULT_FUSION["wbf_auto"]))
+        var_wbf_iou.set("")  # auto by default
+        var_wbf_alp.set(str(_DEFAULT_FUSION["wbf_alpha"]))
+        var_seam_iou_low.set(str(_DEFAULT_SEAM["seam_iou_low"]))
+        var_seam_band.set(str(_DEFAULT_SEAM["seam_band_factor"]))
+        var_seam_weight.set(str(_DEFAULT_SEAM["seam_weight"]))
+        var_margin_weight.set(str(_DEFAULT_SEAM["margin_weight"]))
+        apply_and_stay(msg=f"[ADV] Built-in preset applied: {name}")
+
+# ---------- helpers (UI rows & preset I/O) ----------
+def _row(parent, label, var: tk.StringVar, focus_cb=None):
+    f = tk.Frame(parent); f.pack(fill="x", padx=6, pady=3)
+    tk.Label(f, text=label, width=24, anchor="w").pack(side="left")
+    e = tk.Entry(f, textvariable=var, width=12)
+    e.pack(side="left")
+    if focus_cb:
+        e.bind("<FocusIn>", lambda _e: focus_cb())
+
+def _binds_to_dict(*vars_) -> dict:
+    (var_tile,var_ovl,var_conf,var_iou,var_use_wbf,var_wbf_auto,var_wbf_iou,var_wbf_alp,
+     var_seam_iou_low,var_seam_band,var_seam_weight,var_margin_weight) = vars_
+    return {
+        "tile": var_tile.get(),
+        "overlap": var_ovl.get(),
+        "conf": var_conf.get(),
+        "iou_nms": var_iou.get(),
+        "use_wbf": var_use_wbf.get(),
+        "wbf_auto": var_wbf_auto.get(),
+        "wbf_iou": var_wbf_iou.get(),
+        "wbf_alpha": var_wbf_alp.get(),
+        "seam_iou_low": var_seam_iou_low.get(),
+        "seam_band_factor": var_seam_band.get(),
+        "seam_weight": var_seam_weight.get(),
+        "margin_weight": var_margin_weight.get(),
+    }
+
+def _add_help_bindings(widget, on_focus):
+    try:
+        widget.bind("<FocusIn>", lambda _e: on_focus())
+    except Exception:
+        pass
+
+def _import_preset(win, app, cur_vals: dict):
+    fp = filedialog.askopenfilename(
+        title="Load advanced preset",
+        filetypes=[("JSON files","*.json"), ("All files","*.*")],
+        parent=win
+    )
+    if not fp:
+        return
+    try:
+        data = json.loads(Path(fp).read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            raise ValueError("Preset JSON must be an object with parameter keys.")
+        merged = {k: data[k] for k in _PARAM_KEYS if k in data}
+        _apply_to_app(app, merged, log_msg=f"[ADV] Preset loaded: {Path(fp).name}")
+        messagebox.showinfo("Advanced", f"Preset loaded:\n{fp}", parent=win)
+    except Exception as e:
+        messagebox.showerror("Advanced", f"Failed to load preset:\n{e}", parent=win)
+
+def _export_preset(win, app, cur_vals: dict):
+    # Compose a clean dict with current values (coerce like Apply would)
+    to_save = {
+        "tile": _int(cur_vals["tile"], 1024),
+        "overlap": _float(cur_vals["overlap"], 0.3),
+        "conf": _float(cur_vals["conf"], 0.5),
+        "iou_nms": _float(cur_vals["iou_nms"], 0.55),
+        "use_wbf": bool(cur_vals["use_wbf"].get() if hasattr(cur_vals["use_wbf"], "get") else cur_vals["use_wbf"]),
+        "wbf_auto": bool(cur_vals["wbf_auto"].get() if hasattr(cur_vals["wbf_auto"], "get") else cur_vals["wbf_auto"]),
+        "wbf_iou": None if (cur_vals["wbf_iou"] in ("", None)) else _float(cur_vals["wbf_iou"], 0.6),
+        "wbf_alpha": _float(cur_vals["wbf_alpha"], 0.2),
+        "seam_iou_low": _float(cur_vals["seam_iou_low"], 0.30),
+        "seam_band_factor": _float(cur_vals["seam_band_factor"], 0.10),
+        "seam_weight": _float(cur_vals["seam_weight"], 0.35),
+        "margin_weight": _float(cur_vals["margin_weight"], 0.25),
+    }
+    default_dir = Path.cwd() / "presets"
+    default_dir.mkdir(parents=True, exist_ok=True)
+    fp = filedialog.asksaveasfilename(
+        title="Save advanced preset",
+        defaultextension=".json",
+        initialdir=str(default_dir),
+        initialfile="cv_counter_preset.json",
+        filetypes=[("JSON files","*.json")],
+        parent=win
+    )
+    if not fp:
+        return
+    try:
+        Path(fp).write_text(json.dumps(to_save, ensure_ascii=False, indent=2), encoding="utf-8")
+        messagebox.showinfo("Advanced", f"Preset saved:\n{fp}", parent=win)
+    except Exception as e:
+        messagebox.showerror("Advanced", f"Failed to save preset:\n{e}", parent=win)

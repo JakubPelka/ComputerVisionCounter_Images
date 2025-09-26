@@ -1,0 +1,14 @@
+{
+  "tile": 2560,
+  "overlap": 0.6,
+  "conf": 0.75,
+  "iou_nms": 0.4,
+  "use_wbf": true,
+  "wbf_auto": true,
+  "wbf_iou": null,
+  "wbf_alpha": 0.2,
+  "seam_iou_low": 0.3,
+  "seam_band_factor": 0.1,
+  "seam_weight": 0.35,
+  "margin_weight": 0.25
+}
