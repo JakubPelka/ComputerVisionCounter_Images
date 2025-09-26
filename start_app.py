@@ -1,11 +1,17 @@
-# start_app.py — AOI Manager inside editor + always-auto engine/device
+# start_app.py — main app entry for ComputerVision Counter
+# - Auto engine/device (no selectors in UI)
+# - AOI editor persists AOIs and auto-enables Use AOI
+# - AOI import/export compatibility (old 'points' and new 'polygon')
+# - Class grid keeps REAL class IDs
+# - Smooth progress updates
+
 from __future__ import annotations
 import sys, json, time, threading
 from pathlib import Path
 import tkinter as tk
 from tkinter import filedialog, messagebox
 
-# prefer local pkgs
+# --- ensure local pkgs/ are first on sys.path
 def _add_local_pkgs():
     here = Path(__file__).parent.resolve()
     for d in ("pkgs", "_pkgs"):
@@ -19,6 +25,7 @@ try:
 except Exception:
     cv2 = None
 
+# --- project imports
 from app_core import (
     InferConfig, ModelEngine, collect_images,
     save_csv, save_json, save_run_metadata
@@ -30,6 +37,7 @@ from legacy_pt_runner import run_legacy_pt, build_union_mask
 
 APP_TITLE = "ComputerVision Counter — Count anything without coding"
 
+# -------- presets / defaults --------
 QUALITY_PRESETS = {
     1: {"tile": 640,  "overlap": 0.15, "conf": 0.40, "iou_nms": 0.65, "use_wbf": True},
     2: {"tile": 896,  "overlap": 0.25, "conf": 0.45, "iou_nms": 0.60, "use_wbf": True},
@@ -44,7 +52,8 @@ DEFAULT_SEAM_BAND_FACTOR = 0.10
 DEFAULT_SEAM_WEIGHT = 0.35
 DEFAULT_MARGIN_WEIGHT = 0.25
 
-def auto_wbf_iou(q, nms): return 0.60 if int(q) == 5 else max(0.55, float(nms))
+def auto_wbf_iou(q, nms):  # helper for a decent default WBF IoU
+    return 0.60 if int(q) == 5 else max(0.55, float(nms))
 
 
 class App(tk.Tk):
@@ -55,13 +64,18 @@ class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title(APP_TITLE)
-        self.geometry("1120x860"); self.minsize(980,740)
+        self.geometry("900x700")
+        self.minsize(900, 700)
 
-        # paths / selection
+        # selections
         self.input_dir = tk.StringVar(value="")
         self.output_dir = tk.StringVar(value="")
         self.weights_path = tk.StringVar(value="")
         self.selected_files: list[Path] = []
+
+        # “hidden” advanced flags (kept in code, not shown in UI)
+        self.engine_var = tk.StringVar(value="auto")  # auto/pt/onnx
+        self.device_var = tk.StringVar(value="auto")  # auto/cpu/cuda:0
 
         # quality / advanced
         self.quality = tk.IntVar(value=DEFAULT_QUALITY)
@@ -83,18 +97,19 @@ class App(tk.Tk):
         # AOI
         self.use_aoi = tk.BooleanVar(value=False)
         self.require_aoi_all = tk.BooleanVar(value=False)
-        self.aoi_mode = tk.StringVar(value="centroid")
+        self.aoi_mode = tk.StringVar(value="centroid")  # centroid | box
         self.aoi_box_frac = tk.DoubleVar(value=0.20)
-        self.aoi_map: dict[str, list[dict]] = {}  # path-> [{'name', 'polygon':[[x,y],...]}]
+        # image path (string) -> list of {"name": str, "polygon": [[x,y],...]}
+        self.aoi_map: dict[str, list[dict]] = {}
 
         # visualization
-        self.overlay_mode = tk.StringVar(value="boxes_conf")
+        self.overlay_mode = tk.StringVar(value="boxes_conf")  # boxes | boxes_conf | centroid
         self.annotate = tk.BooleanVar(value=True)
         self.draw_centroid = tk.BooleanVar(value=False)
 
         # classes
-        self.class_names: dict[int,str] = {}                # id -> name
-        self.class_vars: list[tuple[str, tk.BooleanVar, int]] = []  # (name, var, class_id)
+        self.class_names: dict[int, str] = {}                          # id -> name
+        self.class_vars: list[tuple[str, tk.BooleanVar, int]] = []     # (name, var, class_id)
         self._class_cols = 4
         self.classes_scroll: ScrollableFrame | None = None
         self.classes_container = None
@@ -109,6 +124,7 @@ class App(tk.Tk):
         self._logfile: Path | None = None
         self._worker: threading.Thread | None = None
 
+        # build UI
         ui_panels.build_main_ui(self)
 
         # hotkeys
@@ -120,7 +136,8 @@ class App(tk.Tk):
     # ---------- pickers ----------
     def browse_input(self):
         d = filedialog.askdirectory(title="Select input folder with images")
-        if not d: return
+        if not d:
+            return
         self.input_dir.set(d)
         imgs = collect_images(Path(d))
         self.progress_label.set(f"{len(imgs)} images ready")
@@ -131,7 +148,8 @@ class App(tk.Tk):
             title="Select images",
             filetypes=[("Images","*.jpg *.jpeg *.png *.bmp *.tif *.tiff *.webp")]
         )
-        if not files: return
+        if not files:
+            return
         self.selected_files = [Path(f) for f in files]
         self.progress_label.set(f"{len(self.selected_files)} images selected")
         self._refresh_files_label()
@@ -150,22 +168,26 @@ class App(tk.Tk):
                     self.files_label.config(text=f"{len(collect_images(root))} images in folder")
                 else:
                     self.files_label.config(text="— no files selected —")
-        except Exception: pass
+        except Exception:
+            pass
 
     def browse_output(self):
         d = filedialog.askdirectory(title="Select output folder")
-        if d: self.output_dir.set(d)
+        if d:
+            self.output_dir.set(d)
 
     def browse_weights(self):
         p = filedialog.askopenfilename(
             title="Select weights (.pt or .onnx)",
             filetypes=[("Models","*.pt *.onnx"), ("All files","*.*")]
         )
-        if not p: return
+        if not p:
+            return
         self.weights_path.set(p)
         self._log(f"Model: {Path(p).name}")
+        # preload classes if engine can provide them
         try:
-            cfg = InferConfig(model_path=p, engine="auto", device="auto")
+            cfg = InferConfig(model_path=p, engine=self.engine_var.get(), device=self.device_var.get())
             eng = ModelEngine(cfg)
             self.class_names = eng.available_classes()  # dict: id->name
             self._populate_classes(self.class_names)    # keep real IDs
@@ -184,64 +206,33 @@ class App(tk.Tk):
     def _open_aoi_editor(self):
         imgs = self._resolve_inputs()
         if not imgs:
-            messagebox.showinfo("AOI", "Select input images first."); return
+            messagebox.showinfo("AOI", "Select input images first.")
+            return
 
-        # import existing AOIs from disk (if any) so they show in the editor
+        # if AOIs exist on disk for these images, preload them (silent)
         self._import_aois_from_folder_for_images(imgs, silent=True)
 
         idx = 0
-        top = tk.Toplevel(self); top.title("AOI — define & manage polygons per image"); top.geometry("1160x880")
+        top = tk.Toplevel(self)
+        top.title("AOI — define polygons per image")
+        top.geometry("1100x840")
+        # --- keep the editor above the main window on open
+        try:
+            top.transient(self)
+            top.lift()
+            top.attributes("-topmost", True)
+            top.after(250, lambda: top.attributes("-topmost", False))
+        except Exception:
+            pass
 
-        # --------- toolbar (AOI manager) ----------
-        tbar = tk.Frame(top); tbar.pack(fill="x", pady=(6,2))
-        def load_json():
-            path = filedialog.askopenfilename(parent=top, title="Load AOIs (JSON)",
-                                              filetypes=[("JSON files","*.json")])
-            if not path: return
-            try:
-                data = json.loads(Path(path).read_text(encoding="utf-8"))
-                aois = _parse_aois_json(data)
-                if not aois:
-                    messagebox.showwarning("AOI", "No polygons found in the file."); return
-                apply_all = tk.messagebox.askyesno("Apply to all?", "Apply loaded AOIs to ALL images?\n(Yes = all images, No = only current)")
-                if apply_all:
-                    for p in imgs:
-                        self.aoi_map[str(p)] = aois
-                else:
-                    self.aoi_map[str(imgs[idx])] = aois
-                load_idx(idx)  # refresh
-                self.use_aoi.set(True)
-                self._log(f"[AOI] Imported {len(aois)} polygon(s) from {path}")
-            except Exception as e:
-                messagebox.showerror("AOI", f"Failed to load JSON:\n{e}")
+        def save_current():
+            p = imgs[idx]
+            self.aoi_map[str(p)] = editor.get_aois()
 
-        def save_json():
-            if not editor.get_aois():
-                messagebox.showinfo("AOI", "No AOIs to save for this image."); return
-            path = filedialog.asksaveasfilename(parent=top, title="Save AOIs as",
-                                                defaultextension=".json",
-                                                filetypes=[("JSON files","*.json")],
-                                                initialfile=f"{imgs[idx].stem}.json")
-            if not path: return
-            try:
-                out = {"image": imgs[idx].name, "aois": editor.get_aois()}
-                # also mirror 'points' for legacy compatibility
-                for a in out["aois"]:
-                    a["points"] = [list(pt) for pt in a["polygon"]]
-                Path(path).write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
-                self._log(f"[AOI] Saved AOIs to {path}")
-            except Exception as e:
-                messagebox.showerror("AOI", f"Failed to save JSON:\n{e}")
+        def on_change(_aois):
+            save_current()
 
-        def clear_current():
-            self.aoi_map[str(imgs[idx])] = []
-            load_idx(idx)
-
-        tk.Button(tbar, text="Load AOIs (JSON)…", command=load_json).pack(side="left")
-        tk.Button(tbar, text="Save AOIs as…", command=save_json).pack(side="left", padx=6)
-        tk.Button(tbar, text="Clear (current image)", command=clear_current).pack(side="left", padx=6)
-
-        # --------- nav ----------
+        # nav row
         nav = tk.Frame(top); nav.pack(fill="x", pady=4)
         idx_var = tk.StringVar(value=f"1/{len(imgs)}")
         tk.Button(nav, text="⟵ Prev", command=lambda: load_idx(idx-1)).pack(side="left")
@@ -249,12 +240,9 @@ class App(tk.Tk):
         tk.Label(nav, textvariable=idx_var).pack(side="left", padx=10)
         tk.Label(nav, text="(Finish polygon: Ctrl+Enter — Undo vertex: Ctrl+Backspace)", fg="#666").pack(side="left", padx=10)
 
+        # editor
         holder = tk.Frame(top); holder.pack(fill="both", expand=True)
-        editor = AOIEditor(holder, on_change=lambda _aois: save_current()); editor.pack(fill="both", expand=True)
-
-        def save_current():
-            p = imgs[idx]
-            self.aoi_map[str(p)] = editor.get_aois()
+        editor = AOIEditor(holder, on_change=on_change); editor.pack(fill="both", expand=True)
 
         def load_idx(i):
             nonlocal idx
@@ -262,24 +250,28 @@ class App(tk.Tk):
             i = max(0, min(i, len(imgs)-1)); idx = i
             p = imgs[i]
             editor.load_image(str(p))
-            editor.set_aois(self.aoi_map.get(str(p), []))
+            aois = self.aoi_map.get(str(p), None)
+            editor.set_aois(aois if aois is not None else [])
             idx_var.set(f"{i+1}/{len(imgs)}")
 
         def on_close():
             save_current()
-            # Persist to INPUT/aoi & aoi_masks right away
+            # persist to <input>/aoi & aoi_masks immediately
             self._export_aois_to_input(imgs, force=True)
+            # enable Use AOI if any AOIs exist
             if any(self.aoi_map.get(str(p)) for p in imgs):
                 self.use_aoi.set(True)
+                self._log("[AOI] AOIs saved; Use AOI enabled.")
             top.destroy()
 
         top.protocol("WM_DELETE_WINDOW", on_close)
-        load_idx(0)  # show image immediately
+        load_idx(0)  # show first image immediately
 
     def import_aois_from_input(self):
         imgs = self._resolve_inputs()
         if not imgs:
-            messagebox.showinfo("AOI", "Select input images first."); return
+            messagebox.showinfo("AOI", "Select input images first.")
+            return
         loaded = self._import_aois_from_folder_for_images(imgs, silent=False)
         if loaded > 0:
             self.use_aoi.set(True)
@@ -288,13 +280,16 @@ class App(tk.Tk):
     def export_aois_now(self):
         imgs = self._resolve_inputs()
         if not imgs:
-            messagebox.showinfo("AOI", "Select input images first."); return
+            messagebox.showinfo("AOI", "Select input images first.")
+            return
         count = self._export_aois_to_input(imgs, force=True)
         messagebox.showinfo("AOI", f"Exported AOIs for {count} images.")
 
-    # core import/export helpers
+    # --- core import/export helpers
     def _import_aois_from_folder_for_images(self, imgs, silent: bool):
-        if not imgs: return 0
+        """Read AOIs from <input>/aoi/*.json for the given image list (supports 'points' and 'polygon')."""
+        if not imgs:
+            return 0
         root = imgs[0].parent if self.selected_files else Path(self.input_dir.get().strip())
         folder = root / "aoi"
         if not folder.exists():
@@ -307,7 +302,19 @@ class App(tk.Tk):
             try:
                 data = json.loads(Path(jf).read_text(encoding="utf-8"))
                 img_name = data.get("image")
-                aois = _parse_aois_json(data)
+                raw = data.get("aois", None)
+                aois = []
+                if isinstance(raw, list):
+                    for a in raw:
+                        pts = a.get("polygon", a.get("points", a.get("pts", [])))
+                        if pts and len(pts) >= 3:
+                            aois.append({"name": a.get("name","AOI"),
+                                         "polygon": [[float(x),float(y)] for x,y in pts]})
+                else:
+                    legacy_pts = data.get("points", None)
+                    if legacy_pts and len(legacy_pts) >= 3:
+                        aois = [{"name": "AOI 1",
+                                 "polygon": [[float(x),float(y)] for x,y in legacy_pts]}]
                 if img_name in by_name and aois:
                     self.aoi_map[str(by_name[img_name])] = aois
                     loaded += 1
@@ -318,8 +325,11 @@ class App(tk.Tk):
         return loaded
 
     def _export_aois_to_input(self, imgs, force=False):
-        if not imgs: return 0
-        if not (force or (self.use_aoi.get() and self.aoi_map)): return 0
+        """Persist AOIs JSON + union masks next to input images. Returns number saved."""
+        if not imgs:
+            return 0
+        if not (force or (self.use_aoi.get() and self.aoi_map)):
+            return 0
         root = imgs[0].parent if self.selected_files else Path(self.input_dir.get().strip())
         (root / "aoi").mkdir(parents=True, exist_ok=True)
         if cv2 is not None:
@@ -328,18 +338,23 @@ class App(tk.Tk):
         saved = 0
         for p in imgs:
             aois = self.aoi_map.get(str(p), [])
-            if not aois: continue
-            out = {"image": p.name,
-                   "aois": [{"name": a.get("name","AOI"),
-                             "polygon": [list(pt) for pt in a.get("polygon", [])],
-                             "points":  [list(pt) for pt in a.get("polygon", [])]}  # legacy mirror
-                            for a in aois]}
-            (root/"aoi"/f"{p.stem}.json").write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
+            if not aois:
+                continue
+            out = {
+                "image": p.name,
+                "aois": [{"name": a.get("name","AOI"),
+                          "polygon": [list(pt) for pt in a.get("polygon", a.get("pts", []))],
+                          "points":  [list(pt) for pt in a.get("polygon", a.get("pts", []))]}  # legacy mirror
+                         for a in aois]
+            }
+            with open(root/"aoi"/f"{p.stem}.json","w",encoding="utf-8") as f:
+                json.dump(out, f, ensure_ascii=False, indent=2)
+
             if cv2 is not None:
                 im = cv2.imread(str(p))
                 if im is not None:
                     h,w = im.shape[:2]
-                    m = build_union_mask(h,w,aois)
+                    m = build_union_mask(h, w, aois)  # expects 'polygon'
                     if m is not None:
                         cv2.imwrite(str(root/"aoi_masks"/f"{p.stem}.png"), m)
             saved += 1
@@ -350,33 +365,45 @@ class App(tk.Tk):
     def _update_preset_label(self):
         p = QUALITY_PRESETS.get(int(self.quality.get()), QUALITY_PRESETS[DEFAULT_QUALITY])
         try:
-            self.preset_label.config(text=f"tile={p['tile']}  overlap={p['overlap']}  conf={p['conf']}  nms={p['iou_nms']}  WBF={p['use_wbf']}")
-        except Exception: pass
+            self.preset_label.config(
+                text=f"tile={p['tile']}  overlap={p['overlap']}  conf={p['conf']}  nms={p['iou_nms']}  WBF={p['use_wbf']}"
+            )
+        except Exception:
+            pass
 
-    def open_advanced(self): open_advanced(self)
+    def open_advanced(self):
+        open_advanced(self)
 
     def _resolve_inputs(self) -> list[Path]:
-        if self.selected_files: return self.selected_files[:]
-        if not self.input_dir.get().strip(): return []
+        if self.selected_files:
+            return self.selected_files[:]
+        if not self.input_dir.get().strip():
+            return []
         return collect_images(Path(self.input_dir.get().strip()))
 
     # ===== Dynamic classes grid (keep REAL class IDs) =====
-    def _populate_classes(self, id2name: dict[int,str] | list[str]):
+    def _populate_classes(self, id2name: dict[int, str] | list[str]):
         if not hasattr(self, "classes_container") or self.classes_container is None:
             return
         container = self.classes_container
 
         prev = set(cid for (_nm, var, cid) in self.class_vars if var.get())
+
+        # clear UI
         for w in container.winfo_children():
-            try: w.destroy()
-            except Exception: pass
+            try:
+                w.destroy()
+            except Exception:
+                pass
         self.class_vars.clear()
 
+        # normalize into list of (class_id, name)
         if isinstance(id2name, dict):
             pairs = [(cid, nm) for cid, nm in sorted(id2name.items(), key=lambda kv: kv[0])]
         else:
             pairs = list(enumerate(id2name))
 
+        # compute columns based on available width
         try:
             avail = max(320, int(self.classes_scroll.canvas.winfo_width()))
         except Exception:
@@ -388,6 +415,7 @@ class App(tk.Tk):
         for c in range(cols):
             container.grid_columnconfigure(c, minsize=col_w, weight=1, uniform="classes")
 
+        # build cells
         for idx, (cid, nm) in enumerate(pairs):
             var = tk.BooleanVar(value=(cid in prev))
             r, c = divmod(idx, cols)
@@ -402,8 +430,10 @@ class App(tk.Tk):
         try:
             avail = max(320, int(width))
         except Exception:
-            try: avail = max(320, int(self.classes_scroll.canvas.winfo_width()))
-            except Exception: avail = 800
+            try:
+                avail = max(320, int(self.classes_scroll.canvas.winfo_width()))
+            except Exception:
+                avail = 800
         new_cols = int(round(avail / float(self.CLASS_CELL_PX)))
         new_cols = max(self.CLASS_COL_MIN, min(self.CLASS_COL_MAX, new_cols))
         if new_cols != self._class_cols and self.class_names:
@@ -431,13 +461,16 @@ class App(tk.Tk):
         ts = time.strftime("%H:%M:%S")
         line = f"[{ts}] {msg}"
         try:
-            self.log.insert("end", line + "\n"); self.log.see("end")
-        except Exception: pass
+            self.log.insert("end", line + "\n")
+            self.log.see("end")
+        except Exception:
+            pass
         try:
             if self._logfile:
                 with open(self._logfile, "a", encoding="utf-8") as f:
                     f.write(line + "\n")
-        except Exception: pass
+        except Exception:
+            pass
 
     # ---------- progress smoothing ----------
     def _smooth_to(self, target_pct: float):
@@ -446,9 +479,11 @@ class App(tk.Tk):
             self._smooth_job = self.after(50, self._smooth_tick)
 
     def _smooth_tick(self):
-        cur = float(self.progress_var.get() or 0.0); tgt = float(self._smooth_target)
+        cur = float(self.progress_var.get() or 0.0)
+        tgt = float(self._smooth_target)
         if abs(tgt - cur) <= 1.0:
-            self.progress_var.set(tgt); self._smooth_job = None
+            self.progress_var.set(tgt)
+            self._smooth_job = None
         else:
             step = 1.0 if tgt > cur else -1.0
             self.progress_var.set(cur + step)
@@ -458,34 +493,39 @@ class App(tk.Tk):
     def start(self):
         imgs = self._resolve_inputs()
         if not imgs:
-            messagebox.showerror("Input", "Select a valid image folder or files."); return
+            messagebox.showerror("Input", "Select a valid image folder or files.")
+            return
         model = self.weights_path.get().strip()
         if not model:
-            messagebox.showerror("Model", "Select a valid weights file (.pt or .onnx)."); return
+            messagebox.showerror("Model", "Select a valid weights file (.pt or .onnx).")
+            return
 
-        # Reuse AOIs on disk automatically
+        # Load AOIs from disk if present so a second run reuses them automatically
         imported = self._import_aois_from_folder_for_images(imgs, silent=True)
         if imported:
             self._log(f"[AOI] Reused existing AOIs for {imported} images.")
+        # If AOIs exist, auto-enable Use AOI
         if not self.use_aoi.get() and (any(self.aoi_map.get(str(p)) for p in imgs) or imported):
             self.use_aoi.set(True)
             self._log("[AOI] AOIs found — Use AOI enabled automatically.")
 
         # require at least one class if names are available
         if self.class_names and not self._selected_classes():
-            messagebox.showwarning("Classes", "Select at least one class."); return
+            messagebox.showwarning("Classes", "Select at least one class.")
+            return
 
         if self.use_aoi.get() and self.require_aoi_all.get():
             missing = [p for p in imgs if str(p) not in self.aoi_map or not self.aoi_map[str(p)]]
             if missing:
-                messagebox.showwarning("AOI", f"AOI missing for {len(missing)} images."); return
+                messagebox.showwarning("AOI", f"AOI missing for {len(missing)} images.")
+                return
 
         outdir = Path(self.output_dir.get().strip()) if self.output_dir.get().strip() else (
             (imgs[0].parent if self.selected_files else Path(self.input_dir.get().strip())) / "results"
         )
         self._set_logfile(outdir)
         self._log(f"Output → {outdir}")
-        self._log(f"Using model: {Path(model).name}  | engine=auto device=auto")
+        self._log(f"Using model: {model}  | engine={self.engine_var.get()} device={self.device_var.get()}")
 
         base = QUALITY_PRESETS.get(int(self.quality.get()), QUALITY_PRESETS[DEFAULT_QUALITY]).copy()
         if self.advanced_override and self.advanced_params:
@@ -496,11 +536,15 @@ class App(tk.Tk):
         # Persist AOIs to input (always if any)
         self._export_aois_to_input(imgs, force=False)
 
-        # choose path: legacy PT by extension
-        use_legacy_pt = model.lower().endswith(".pt")
+        # choose path: legacy YOLOv5/8 .pt runner or core engine (inc. ONNX)
+        use_legacy_pt = (self.engine_var.get() in ("auto", "pt") and model.lower().endswith(".pt"))
 
-        self.btn_start.config(state="disabled"); self.btn_abort.config(state="normal")
-        self._stop = False; self.progress_var.set(0.0); self.update_idletasks()
+        # arm UI
+        self.btn_start.config(state="disabled")
+        self.btn_abort.config(state="normal")
+        self._stop = False
+        self.progress_var.set(0.0)
+        self.update_idletasks()
 
         def work():
             try:
@@ -509,7 +553,7 @@ class App(tk.Tk):
                         imgs=imgs, outdir=outdir, model_path=model,
                         tile=int(base["tile"]), overlap=float(base["overlap"]),
                         conf=float(base["conf"]), iou=float(base["iou_nms"]),
-                        selected_classes=self._selected_classes(),
+                        selected_classes=self._selected_classes(),  # REAL IDs
                         overlay_mode=self.overlay_mode.get(),
                         draw_centroid=bool(self.draw_centroid.get()),
                         aoi_mode=self.aoi_mode.get(),
@@ -530,15 +574,18 @@ class App(tk.Tk):
                 self._tsafe(lambda: (messagebox.showerror("Error", str(e)), self._log(f"[ERROR] {e}")))
             finally:
                 self._tsafe(lambda: (self.btn_start.config(state="normal"), self.btn_abort.config(state="disabled")))
-        self._worker = threading.Thread(target=work, daemon=True); self._worker.start()
+        self._worker = threading.Thread(target=work, daemon=True)
+        self._worker.start()
 
     def abort(self):
         self._stop = True
         self._log("=== ABORT requested ===")
 
     def _tsafe(self, fn):
-        try: self.after(0, fn)
-        except Exception: pass
+        try:
+            self.after(0, fn)
+        except Exception:
+            pass
 
     # ---------- engine-core path ----------
     def _run_engine_core(self, imgs, outdir: Path, model, base):
@@ -562,7 +609,7 @@ class App(tk.Tk):
         def pcb(i, n, eta_sec):
             frac = i / max(1, n)
             m = int(eta_sec // 60); s = int(eta_sec % 60)
-            self._smooth_to(frac*100.0)
+            self._smooth_to(frac * 100.0)
             self.progress_label.set(f"Image {i}/{n} — ETA {m:02d}:{s:02d}")
 
         per_image, totals = engine.predict_batch(
@@ -571,15 +618,16 @@ class App(tk.Tk):
             progress_cb=pcb, abort_cb=lambda: self._stop
         )
         class_names = sorted({k for _, cnt in per_image for k in cnt.keys()})
-        rows = [[path] + [cnt.get(c,0) for c in class_names] for path, cnt in per_image]
-        save_csv(rows, header=["image_path"]+class_names, out_path=outdir/"results_per_image.csv")
-        save_json(totals, out_path=outdir/"results_totals.json")
+        rows = [[path] + [cnt.get(c, 0) for c in class_names] for path, cnt in per_image]
+        save_csv(rows, header=["image_path"] + class_names, out_path=outdir / "results_per_image.csv")
+        save_json(totals, out_path=outdir / "results_totals.json")
         save_run_metadata(outdir, imgs, cfg, totals)
         return totals
 
     # ---------- classes helpers ----------
     def _selected_classes(self):
         return [cid for (_nm, v, cid) in self.class_vars if v.get()]
+
 
 if __name__ == "__main__":
     App().mainloop()
