@@ -133,6 +133,7 @@ def install_minimal_online() -> None:
     ensure_pkg("ultralytics>=8.3.0")
     ensure_pkg("shapely>=2.0.0")
     ensure_pkg("pyproj>=3.6.0")
+    ensure_pkg("onnx>=1.14.0")
 
     # ONNX Runtime: install only if neither CPU nor GPU build present
     present = _local_versions()
