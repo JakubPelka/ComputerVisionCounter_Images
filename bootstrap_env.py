@@ -1,282 +1,208 @@
 # bootstrap_env.py
-# Windows-only bootstrapper: installs/updates packages to ./_pkgs
-# 1) Try ONLINE (PyPI + official PyTorch CPU index)
-# 2) If offline/failure -> OFFLINE from ./wheels
-# 3) Prefer ONNX Runtime GPU; if it fails, fallback to CPU
-# 4) Verify YOLOv11 support (C3k2); if missing -> force (re)install ultralytics
-# 5) Run target app (default: start_app.py; override: pass filename as arg)
+# Bootstrapper for ComputerVision Counter
+# - Installs only missing/outdated packages into ./_pkgs (no forced reinstall)
+# - Enforces local-only imports (strip global site/dist-packages)
+# - Prints module versions and file paths (so you can verify they load from ./_pkgs)
+# - Sets PYTHONNOUSERSITE=1
+# - Launches your app (default: start_app.py; override with arg)
 
 from __future__ import annotations
-import sys, subprocess, os, socket, runpy
+import os, sys, subprocess, socket, runpy, re
 from pathlib import Path
 from importlib import import_module
-from importlib.metadata import version as get_version, PackageNotFoundError
+from importlib.metadata import distributions, PackageNotFoundError, version as get_version
 
 BASE = Path(__file__).parent.resolve()
 PKGS_DIR = BASE / "_pkgs"
-WHEELS_DIR = BASE / "wheels"
+DEFAULT_ENTRY = "start_app.py"
 
-# === target app ===
-DEFAULT_APP = "start_app.py"
-APP_PATH = BASE / (sys.argv[1] if len(sys.argv) > 1 else DEFAULT_APP)
+# ---------- logging / net ----------
+def log(msg: str) -> None:
+    print(msg, flush=True)
 
-# === Requirements ===
-# Torch/vision from CPU index – tested on Py 3.11/3.12 (CPU)
-REQUIREMENTS_TORCH = [
-    "torch==2.3.1+cpu",
-    "torchvision==0.18.1+cpu",
-]
-PYTORCH_CPU_INDEX = "https://download.pytorch.org/whl/cpu"
-
-# Rest from PyPI
-# NOTE: we install onnxruntime separately (prefer GPU), see below.
-REQUIREMENTS_REST = [
-    "ultralytics>=8.3.0",      # YOLOv11 (C3k2 module)
-    "opencv-python>=4.8.0",
-    "numpy>=1.26.0,<2.0.0",
-    "pandas>=2.1.0",
-    "pillow>=10.2.0",
-    "tqdm>=4.66.0",
-    "supervision>=0.21.0",
-    "PyYAML>=6.0",
-    "scipy>=1.11.0",
-    "onnx>=1.15.0",
-    "tifffile>=2023.4.12",     # GeoTIFF support for GeoJSON export
-]
-
-SMOKE_IMPORTS = [
-    ("torch", None),
-    ("torchvision", None),
-    ("ultralytics", None),
-    ("cv2", None),
-    ("numpy", None),
-    ("pandas", None),
-    ("PIL", None),
-    ("tqdm", None),
-    ("yaml", None),
-    ("scipy", None),
-    ("onnxruntime", None),  # check ORT presence
-    ("tifffile", None),
-]
-
-def is_online(host="pypi.org", port=443, timeout=2.5) -> bool:
+def online() -> bool:
     try:
-        with socket.create_connection((host, port), timeout=timeout):
-            return True
+        socket.create_connection(("pypi.org", 443), timeout=3).close()
+        return True
     except OSError:
         return False
 
-def add_pkgs_to_syspath():
-    if str(PKGS_DIR) not in sys.path:
-        sys.path.insert(0, str(PKGS_DIR))
+# ---------- sys.path controls ----------
+def add_local_pkgs_and_strip_globals() -> None:
+    """Prepend ./_pkgs and strip any other site-packages/dist-packages entries."""
+    p = str(PKGS_DIR)
+    if p not in sys.path:
+        sys.path.insert(0, p)
 
-def run_pip(args: list[str]) -> int:
-    cmd = [sys.executable, "-m", "pip"] + args
-    print(">>", " ".join(cmd))
-    return subprocess.call(cmd)
+    keep: list[str] = []
+    for sp in sys.path:
+        low = sp.replace("\\", "/").lower()
+        if "site-packages" in low or "dist-packages" in low:
+            # keep only our local _pkgs entry
+            if Path(sp).resolve() == PKGS_DIR.resolve():
+                keep.append(sp)
+            else:
+                continue
+        else:
+            keep.append(sp)
+    sys.path[:] = keep
 
-def have_all_imports(verbose=True) -> bool:
-    add_pkgs_to_syspath()
-    ok = True
-    for mod, _ in SMOKE_IMPORTS:
-        try:
-            import_module(mod)
-            if verbose:
-                try:
-                    print(f"[OK] import {mod} ({get_version(mod)})")
-                except PackageNotFoundError:
-                    print(f"[OK] import {mod}")
-        except Exception as e:
-            ok = False
-            if verbose:
-                print(f"[MISS] {mod}: {e}")
-    return ok
-
-def ultralytics_supports_yolo11() -> bool:
-    """YOLOv11 uses C3k2 in ultralytics.nn.modules.block."""
+# ---------- versions present in _pkgs ----------
+def _local_versions() -> dict[str, str]:
+    """Return {normalized-name: version} for distributions INSIDE ./_pkgs only."""
+    vers: dict[str, str] = {}
     try:
-        add_pkgs_to_syspath()
-        from ultralytics.nn.modules import block as ublock
-        return hasattr(ublock, "C3k2")
+        for dist in distributions(path=[str(PKGS_DIR)]):
+            name = (dist.metadata.get("Name") or "").strip()
+            if not name:
+                continue
+            vers[name.lower()] = dist.version
     except Exception:
-        return False
+        pass
+    return vers
 
-def install_onnxruntime_prefer_gpu_online() -> None:
-    """Try onnxruntime-gpu first; fall back to CPU."""
-    print("\n=== ONNX Runtime (prefer GPU) — ONLINE ===")
-    rc_gpu = run_pip(["install", "--target", str(PKGS_DIR), "--upgrade", "onnxruntime-gpu"])
-    if rc_gpu == 0:
-        print("[OK] onnxruntime-gpu installed.")
-        return
-    print("[WARN] onnxruntime-gpu failed, falling back to CPU…")
-    rc_cpu = run_pip(["install", "--target", str(PKGS_DIR), "--upgrade", "onnxruntime"])
-    if rc_cpu != 0:
-        print("[ERR] onnxruntime (CPU) install failed as well.")
+def _norm_version_tuple(v: str) -> tuple[int, ...]:
+    parts = [int(x) for x in re.findall(r"\d+", v)]
+    return tuple(parts) if parts else (0,)
 
-def install_onnxruntime_prefer_gpu_offline() -> None:
-    """OFFLINE: prefer onnxruntime-gpu*.whl; else onnxruntime*.whl."""
-    print("\n=== ONNX Runtime (prefer GPU) — OFFLINE ===")
-    if not WHEELS_DIR.exists():
-        print("[ERR] ./wheels directory not found for offline ORT.")
-        return
-    whl_gpu = sorted(WHEELS_DIR.glob("onnxruntime_gpu*.whl")) + sorted(WHEELS_DIR.glob("onnxruntime-gpu*.whl"))
-    whl_cpu = sorted(WHEELS_DIR.glob("onnxruntime*.whl"))
+def _satisfies(installed: str, op: str, required: str) -> bool:
+    a, b = _norm_version_tuple(installed), _norm_version_tuple(required)
+    if op == "==":
+        return a == b
+    # default to '>='
+    return a >= b
 
-    if whl_gpu:
-        rc = run_pip(["install", "--no-index", "--find-links", str(WHEELS_DIR),
-                      "--target", str(PKGS_DIR), str(whl_gpu[0])])
-        if rc == 0:
-            print(f"[OK] Installed {whl_gpu[0].name}")
-            return
-        print("[WARN] onnxruntime-gpu wheel failed, trying CPU…")
+def _parse_req(req: str) -> tuple[str, str, str]:
+    """Parse 'name==x.y' or 'name>=x.y' → (name, op, ver)."""
+    if "==" in req:
+        name, ver = req.split("==", 1)
+        return name.strip(), "==", ver.strip()
+    if ">=" in req:
+        name, ver = req.split(">=", 1)
+        return name.strip(), ">=", ver.strip()
+    # no spec → treat as >=0
+    return req.strip(), ">=", "0"
 
-    # CPU fallback; filter out gpu wheels
-    whl_cpu = [p for p in whl_cpu if "gpu" not in p.name.lower()]
-    if whl_cpu:
-        rc2 = run_pip(["install", "--no-index", "--find-links", str(WHEELS_DIR),
-                       "--target", str(PKGS_DIR), str(whl_cpu[0])])
-        if rc2 == 0:
-            print(f"[OK] Installed {whl_cpu[0].name}")
-            return
-    print("[ERR] No suitable onnxruntime wheel installed offline.")
+# ---------- pip ----------
+def run_pip(args: list[str]) -> int:
+    env = os.environ.copy()
+    env["PYTHONNOUSERSITE"] = "1"
+    cmd = [sys.executable, "-m", "pip"] + args
+    log(f"[pip] {' '.join(args)}")
+    return subprocess.call(cmd, env=env)
 
-def install_online() -> bool:
-    print("\n=== ONLINE INSTALL (to ./_pkgs) ===")
-    PKGS_DIR.mkdir(parents=True, exist_ok=True)
+def ensure_pkg(req: str) -> bool:
+    """
+    Ensure requirement 'name==x' or 'name>=x' is present in ./_pkgs.
+    Returns True if satisfied (already or after install), False on failure.
+    """
+    name, op, ver = _parse_req(req)
+    present = _local_versions()
+    inst = present.get(name.lower())
 
-    run_pip(["install", "--upgrade", "pip"])
+    if inst and _satisfies(inst, op, ver):
+        log(f"[ok] {name} {inst} (already in _pkgs)")
+        return True
 
-    rc_t = run_pip([
-        "install", "--index-url", PYTORCH_CPU_INDEX, "--target", str(PKGS_DIR),
-        *REQUIREMENTS_TORCH
-    ])
-    if rc_t != 0:
-        print("[WARN] Torch CPU install failed (continuing).")
-
-    rc_r = run_pip(["install", "--target", str(PKGS_DIR), *REQUIREMENTS_REST])
-    if rc_r != 0:
-        print("[WARN] Some packages failed from PyPI.")
-
-    # ONNX Runtime: prefer GPU, fallback CPU
-    install_onnxruntime_prefer_gpu_online()
-
-    return have_all_imports(verbose=True)
-
-def install_offline_from_wheels() -> bool:
-    print("\n=== OFFLINE INSTALL from ./wheels (to ./_pkgs) ===")
-    if not WHEELS_DIR.exists():
-        print("[ERR] ./wheels directory not found.")
-        return False
-
-    PKGS_DIR.mkdir(parents=True, exist_ok=True)
-
-    rc = run_pip([
-        "install", "--no-index", "--find-links", str(WHEELS_DIR),
-        "--target", str(PKGS_DIR),
-        *REQUIREMENTS_TORCH, *REQUIREMENTS_REST
-    ])
+    # not present or too old → install into _pkgs
+    rc = run_pip(["install", "--no-cache-dir", "--no-warn-script-location",
+                  "--target", str(PKGS_DIR), req])
     if rc != 0:
-        print("[WARN] Offline constraints failed, trying all *.whl directly (excluding ORT for now)…")
-        wheel_files = [p for p in sorted(WHEELS_DIR.glob("*.whl")) if not p.name.startswith("onnxruntime")]
-        if not wheel_files:
-            print("[ERR] No .whl files in ./wheels.")
-            return False
-        rc2 = run_pip(["install", "--no-index", "--target", str(PKGS_DIR)] + [str(p) for p in wheel_files])
-        if rc2 != 0:
-            print("[ERR] Offline install from wheel files failed.")
-            return False
-
-    # ONNX Runtime: prefer GPU, fallback CPU
-    install_onnxruntime_prefer_gpu_offline()
-
-    return have_all_imports(verbose=True)
-
-def force_update_ultralytics(online: bool) -> bool:
-    """Force reinstall ultralytics to a YOLOv11-capable version."""
-    print("\n=== Force (re)install ultralytics for YOLOv11 ===")
-    run_pip(["uninstall", "-y", "ultralytics"])
-
-    if online:
-        rc = run_pip(["install", "--target", str(PKGS_DIR), "ultralytics>=8.3.0"])
-    else:
-        if not WHEELS_DIR.exists():
-            print("[ERR] wheels/ missing; cannot offline-install ultralytics.")
-            return False
-        whls = sorted([p for p in WHEELS_DIR.glob("ultralytics-*.whl")], reverse=True)
-        if not whls:
-            print("[ERR] No ultralytics wheel in ./wheels.")
-            return False
-        rc = run_pip(["install", "--no-index", "--target", str(PKGS_DIR), str(whls[0])])
-
-    if rc != 0:
-        print("[ERR] ultralytics reinstall failed.")
+        log(f"[ERR] pip failed for {req}")
         return False
 
-    add_pkgs_to_syspath()
-    ok = ultralytics_supports_yolo11()
-    print(f"[CHK] YOLOv11 support (C3k2): {'OK' if ok else 'NO'}")
-    return ok
+    # re-check
+    present = _local_versions()
+    inst = present.get(name.lower())
+    if inst and _satisfies(inst, op, ver):
+        log(f"[ok] {name} {inst} (installed to _pkgs)")
+        return True
 
-def print_ort_provider_info():
+    log(f"[ERR] {name} did not install or wrong version after pip")
+    return False
+
+# ---------- install set ----------
+def install_minimal_online() -> None:
+    """
+    Only install if missing or too old. No forced upgrades on subsequent runs.
+    """
+    # IMPORTANT: accept newer NumPy too to avoid downgrade loops
+    ensure_pkg("numpy>=1.26.4")
+
+    ensure_pkg("opencv-python>=4.8.0")
+    ensure_pkg("ultralytics>=8.3.0")
+    ensure_pkg("shapely>=2.0.0")
+    ensure_pkg("pyproj>=3.6.0")
+
+    # ONNX Runtime: install only if neither CPU nor GPU build present
+    present = _local_versions()
+    has_ort = ("onnxruntime" in present) or ("onnxruntime-gpu" in present)
+    if not has_ort:
+        rc = run_pip(["install", "--no-cache-dir", "--no-warn-script-location",
+                      "--target", str(PKGS_DIR), "onnxruntime-gpu"])
+        if rc != 0:
+            log("[INFO] onnxruntime-gpu failed or not suitable; trying CPU build…")
+            run_pip(["install", "--no-cache-dir", "--no-warn-script-location",
+                     "--target", str(PKGS_DIR), "onnxruntime"])
+
+# ---------- banner ----------
+def smoke_imports_print_paths() -> None:
+    def info(modname: str):
+        try:
+            m = import_module(modname)
+            ver = getattr(m, "__version__", None)
+            try:
+                ver = ver or get_version(modname)
+            except PackageNotFoundError:
+                pass
+            path = getattr(m, "__file__", "?")
+            print(f"[OK] import {modname} ({ver}) @ {path}")
+        except Exception as e:
+            print(f"[MISS] {modname} — {e}")
+
+    for mod in ["numpy", "cv2", "ultralytics", "torch", "torchvision", "onnxruntime"]:
+        info(mod)
+
+def verify_yolo11_shapes() -> None:
     try:
-        add_pkgs_to_syspath()
-        import onnxruntime as ort
-        providers = ort.get_available_providers()
-        print(f"[ORT] Available providers: {providers}")
-        if "CUDAExecutionProvider" in providers:
-            print("[ORT] Using GPU is possible (CUDAExecutionProvider present).")
-        else:
-            print("[ORT] GPU provider not available; ONNX will run on CPU.")
-    except Exception as e:
-        print(f"[ORT] Could not import onnxruntime to query providers: {e}")
+        from ultralytics.nn.modules import C3k2  # type: ignore
+        print("[OK] YOLOv11 modules present (C3k2).")
+    except Exception:
+        print("[WARN] YOLOv11 modules not detected. If your model needs them, upgrade ultralytics.")
+        print("       Try: pip install --upgrade --target _pkgs ultralytics")
 
+# ---------- main ----------
 def main():
-    print("=== bootstrap_env.py ===")
-    print(f"Python: {sys.executable}")
-    print(f"Project: {BASE}")
-    print(f"PKGS_DIR: {PKGS_DIR}")
-    print(f"WHEELS_DIR: {WHEELS_DIR}")
-    print(f"Target app: {APP_PATH.name}\n")
+    os.environ["PYTHONNOUSERSITE"] = "1"
 
-    add_pkgs_to_syspath()
+    PKGS_DIR.mkdir(parents=True, exist_ok=True)
+    add_local_pkgs_and_strip_globals()
 
-    # 0) Quick check
-    have = have_all_imports(verbose=True)
-    online = is_online()
+    print("=== ComputerVision Counter — Bootstrap ===")
+    print(f"Base folder:   {BASE}")
+    print(f"Local pkgs:    {PKGS_DIR}")
 
-    if not have:
-        if online:
-            print("\n[INFO] Network available -> trying online install…")
-            ok = install_online()
-            if not ok:
-                print("\n[INFO] Online incomplete -> trying offline wheels…")
-                ok = install_offline_from_wheels()
-        else:
-            print("\n[INFO] No network -> trying offline wheels…")
-            ok = install_offline_from_wheels()
+    if online():
+        print("[NET] Online → ensuring packages in ./_pkgs (skip if already satisfied)…")
+        install_minimal_online()
+    else:
+        print("[NET] Offline — using existing packages in ./_pkgs")
 
-        if not ok:
-            print("\n[FATAL] Could not install all required packages.")
-            sys.exit(1)
+    add_local_pkgs_and_strip_globals()
 
-    # ONNX Runtime provider info
-    print_ort_provider_info()
+    print("\n=== Import check (version + path) ===")
+    smoke_imports_print_paths()
+    verify_yolo11_shapes()
+    print("=====================================\n")
 
-    # 1) YOLOv11 sanity (C3k2 present?)
-    if not ultralytics_supports_yolo11():
-        print("[INFO] Current ultralytics seems too old for YOLOv11 (missing C3k2).")
-        if not force_update_ultralytics(online=online):
-            print("\n[FATAL] ultralytics still misses YOLOv11 support.")
-            print(" - If offline, place a recent ultralytics wheel in ./wheels and rerun.")
-            sys.exit(1)
+    entry = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_ENTRY
+    entry_path = (BASE / entry)
+    if not entry_path.exists():
+        print(f"[ERROR] Entry script not found: {entry_path}")
+        sys.exit(2)
 
-    # 2) Launch app
-    if not APP_PATH.exists():
-        print(f"\n[ERR] {APP_PATH.name} not found next to bootstrap_env.py")
-        sys.exit(1)
-
-    print("\n=== Launching", APP_PATH.name, "===\n")
-    runpy.run_path(str(APP_PATH), run_name="__main__")
+    print(f"[RUN] {entry_path}")
+    runpy.run_path(str(entry_path), run_name="__main__")
 
 if __name__ == "__main__":
     main()
