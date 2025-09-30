@@ -65,8 +65,8 @@ def build_union_mask(h: int, w: int, aois):
         return None
 
 APP_TITLE = "ComputerVision Counter — Count anything without coding"
-# ---------- Geo export helper ----------
 
+# -------- presets / defaults (shared with ui_advanced) --------
 BUILTIN_PRESETS = {
     "Fast":     {"tile": 896,  "overlap": 0.25, "conf": 0.45, "iou_nms": 0.60,
                  "use_wbf": True, "wbf_alpha": 0.20, "wbf_iou": None, "wbf_auto": True,
@@ -554,9 +554,7 @@ class App(tk.Tk):
         imported = self._import_aois_from_folder_for_images(imgs, silent=True)
         if imported:
             self._log(f"[AOI] Reused existing AOIs for {imported} images.")
-#        if not self.use_aoi.get() and (any(self.aoi_map.get(str(p)) for p in imgs) or imported):
-#            self.use_aoi.set(True)
-#            self._log("[AOI] AOIs found — Use AOI enabled automatically.")
+        # NOTE: Do NOT auto-enable AOI here. Respect the toggle fully.
 
         if self.class_names and not self._selected_classes():
             messagebox.showwarning("Classes", "Select at least one class."); return
@@ -600,10 +598,15 @@ class App(tk.Tk):
                         selected_classes=self._selected_classes(),
                         overlay_mode=self.overlay_mode.get(),
                         draw_centroid=bool(self.draw_centroid.get()),
-                        aoi_mode=self.aoi_mode.get(),
+                        ## AOI OFF must also set mode='off' to avoid "exclude all" behavior
+                        aoi_mode=("off" if not self.use_aoi.get() else self.aoi_mode.get()),
                         aoi_box_frac=float(self.aoi_box_frac.get()),
-                        aoi_map=self.aoi_map if self.use_aoi.get() else {},
-                        progress_cb=lambda pct, txt: self._tsafe(lambda: (self._smooth_to(pct), self.progress_label.set(txt))),
+                        aoi_map=(self.aoi_map if self.use_aoi.get() else {}),
+                        ## Ignore progress updates once abort flag is set
+                        progress_cb=lambda pct, txt: self._tsafe(
+                            lambda: (None if self._stop else self._smooth_to(pct),
+                                     None if self._stop else self.progress_label.set(txt))
+                        ),
                         stop_cb=lambda: self._stop,
                         class_id_to_name=(self.class_names or None),
                         logger=self._log,
@@ -628,7 +631,12 @@ class App(tk.Tk):
             except Exception as e:
                 err = str(e)
                 tb = traceback.format_exc()
-                def report(err=err, tb=tb):
+                def report():
+                    ## Treat abort as clean cancel, not an error popup
+                    if isinstance(e, KeyboardInterrupt) or "ABORT" in err.upper():
+                        self.progress_label.set("Aborted.")
+                        self._log("Aborted by user.")
+                        return
                     messagebox.showerror("Error", err)
                     self._log(f"[ERROR] {err}")
                     self._log(tb)
@@ -639,7 +647,18 @@ class App(tk.Tk):
         self._worker.start()
 
     def abort(self):
+        ## Hard abort: set flag, cancel smoother, freeze UI immediately
         self._stop = True
+        try:
+            if self._smooth_job is not None:
+                self.after_cancel(self._smooth_job)
+                self._smooth_job = None
+        except Exception:
+            pass
+        try:
+            self.progress_label.set("Aborting…")
+        except Exception:
+            pass
         self._log("=== ABORT requested ===")
 
     def _tsafe(self, fn):
@@ -667,7 +686,8 @@ class App(tk.Tk):
             model_path=model, engine=self.engine_var.get(), device=self.device_var.get(),
             conf=float(base["conf"]), iou=float(base["iou_nms"]), imgsz=int(base["tile"]),
             classes=self._selected_classes(),
-            aoi_mode=self.aoi_mode.get(), aoi_box_frac=float(self.aoi_box_frac.get()),
+            aoi_mode=("off" if not self.use_aoi.get() else self.aoi_mode.get()),  ## mirror AOI OFF here too
+            aoi_box_frac=float(self.aoi_box_frac.get()),
             annotate=bool(self.annotate.get()), draw_centroid=bool(self.draw_centroid.get()),
             use_tiling=True, tile=int(base["tile"]), overlap=float(base["overlap"]),
             use_wbf=bool(base.get("use_wbf", True)),
@@ -681,6 +701,8 @@ class App(tk.Tk):
         self._log(f"[engine] names={engine.available_classes()}")
 
         def pcb(i, n, eta_sec):
+            if self._stop:
+                return
             frac = i / max(1, n)
             m = int(eta_sec // 60); s = int(eta_sec % 60)
             self._smooth_to(frac * 100.0)
@@ -731,7 +753,6 @@ class App(tk.Tk):
                 if geo: self._log(f"[GEO] Wrote {geo.name}")
             except Exception as e:
                 self._log(f"[GEO] export failed for {Path(p).name}: {e}")
-# -------- presets / defaults (shared with ui_advanced) --------
 
     @staticmethod
     def _normalize_dets(raw_list):

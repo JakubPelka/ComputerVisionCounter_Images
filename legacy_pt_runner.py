@@ -56,6 +56,21 @@ def _nms_numpy(xyxy: List[List[float]], scores: List[float], iou_thr: float = 0.
         idxs = rest[ious <= iou_thr]
     return keep
 
+# --------------------------- abort helper ---------------------------
+
+def _abort_if_needed(stop_cb):
+    """
+    ## Hard abort: raise KeyboardInterrupt as soon as the UI sets the stop flag.
+    """
+    try:
+        if stop_cb and stop_cb():
+            raise KeyboardInterrupt("ABORT")
+    except KeyboardInterrupt:
+        raise
+    except Exception:
+        # If stop_cb itself fails, still abort
+        raise KeyboardInterrupt("ABORT")
+
 # --------------------------- AOI helpers ---------------------------
 
 def _normalize_aois(aois_raw) -> List[Tuple[str, List[List[float]]]]:
@@ -211,10 +226,9 @@ def run_legacy_pt(
 
     N = len(imgs)
     for idx, p in enumerate(imgs, 1):
-        if stop_cb and stop_cb():
-            logger("[ABORT] user requested stop"); break
-
+        _abort_if_needed(stop_cb)  ## ← hard abort right at image start
         p = Path(p)
+
         img = cv2.imread(str(p))
         if img is None:
             logger(f"[WARN] cannot read {p}"); continue
@@ -244,7 +258,7 @@ def run_legacy_pt(
 
         for yy in ys:
             for xx in xs:
-                if stop_cb and stop_cb(): break
+                _abort_if_needed(stop_cb)  ## ← abort before heavy predict
                 roi = img[yy:min(yy+tile, H), xx:min(xx+tile, W)]
                 res = model.predict(source=roi, imgsz=tile, conf=max(0.05, float(conf)), iou=float(iou),
                                     device=device, verbose=False)
@@ -265,9 +279,9 @@ def run_legacy_pt(
                 frac_img = tiles_done / max(1, tiles_total)
                 frac_all = ((idx - 1) + frac_img) / max(1, N)
                 _progress(frac_all * 100.0, _eta_str(time() - start_t, frac_all))
-            if stop_cb and stop_cb(): break
 
         # --- NMS + filters ---
+        _abort_if_needed(stop_cb)
         keep = _nms_numpy(all_boxes, all_scores, iou_thr=float(iou))
         boxes = [all_boxes[i] for i in keep]
         scores = [all_scores[i] for i in keep]
@@ -338,9 +352,8 @@ def run_legacy_pt(
                     cv2.putText(vis, label, (int(x1), max(0, int(y1)-3)),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1, cv2.LINE_AA)
 
-            # ---- build bottom-right summary: Total + per-AOI (+ classes) ----
+            # ---- bottom-right summary is already simplified in your version ----
             total_count = len(sel)
-            # per-AOI totals and by-class
             aoi_totals: Dict[str,int] = {}
             aoi_by_class: Dict[str, Dict[str,int]] = {}
             for _b, _s, cid, aoi_nm in sel:
@@ -350,7 +363,6 @@ def run_legacy_pt(
                 if nm not in aoi_by_class: aoi_by_class[nm] = {}
                 aoi_by_class[nm][cname] = aoi_by_class[nm].get(cname, 0) + 1
 
-            # Compose summary text (spaces only as separators)
             lines = [f"Total: {total_count}"]
             for nm in sorted(aoi_totals.keys()):
                 classes_str = ""
@@ -358,9 +370,8 @@ def run_legacy_pt(
                     cls_parts = [f"{cn} {aoi_by_class[nm][cn]}" for cn in sorted(aoi_by_class[nm].keys())]
                     classes_str = " (" + ", ".join(cls_parts) + ")"
                 lines.append(f"{nm}: {aoi_totals[nm]}{classes_str}")
-            text = " ".join(lines)  # ← simple spaces; no bullets/Unicode
+            text = " ".join(lines)
 
-            # draw box bottom-right
             (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)
             h, w = vis.shape[:2]; pad = 8
             x2b, y2b = w - pad, h - pad
@@ -384,6 +395,7 @@ def run_legacy_pt(
             for (x1,y1,x2,y2), s, cid, aoi_nm in sel
         ]
 
+        _abort_if_needed(stop_cb)  ## ← abort before end-of-image progress
         frac_all = idx / max(1, N)
         _progress(frac_all * 100.0, _eta_str(time() - start_t, frac_all))
 
