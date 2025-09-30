@@ -12,6 +12,29 @@ except Exception:
 Affine = Tuple[float, float, float, float, float, float]
 _WF_EXTS = {".wld", ".jgw", ".jpgw", ".jpegw", ".pgw", ".pngw", ".tfw", ".gfw", ".gifw", ".bpw", ".tifw"}
 
+# -------- utils --------
+
+def _unique_path(p: Path) -> Path:
+    """
+    ## Non-destructive path: p, p_1, p_2, ...
+    """
+    p = Path(p)
+    if not p.exists():
+        return p
+    d, stem, suf = p.parent, p.stem, p.suffix
+    k = 1
+    while True:
+        q = d / f"{stem}_{k}{suf}"
+        if not q.exists():
+            return q
+        k += 1
+
+def _csv_escape(s: str) -> str:
+    s = "" if s is None else str(s)
+    if any(ch in s for ch in [",", '"', "\n", "\r"]):
+        s = '"' + s.replace('"', '""') + '"'
+    return s
+
 # -------- worldfile / geotiff helpers --------
 
 def _find_worldfile(img_path: Path) -> Optional[Path]:
@@ -25,17 +48,24 @@ def _find_worldfile(img_path: Path) -> Optional[Path]:
     for c in cand:
         if c.exists(): return c
     for s in img_path.parent.iterdir():
-        if s.suffix.lower() in _WF_EXTS and s.stem == base.name:
+        if s.suffix.lower() in _WF_EXTS and s.stem == img_path.stem:
             return s
     return None
 
-def _load_worldfile(fp: Path) -> Affine:
-    # ESRI order: A, D, B, E, C, F  -> convert to (A,B,C,D,E,F)
-    vals = [float(x) for x in fp.read_text(encoding="utf-8").replace(",", ".").split()]
-    if len(vals) != 6:
-        raise ValueError(f"Worldfile must have 6 numbers, got {len(vals)} in {fp}")
-    A, D, B, E, C, F = vals
-    return (A, B, C, D, E, F)
+def _read_worldfile(fp: Path) -> Optional[Affine]:
+    try:
+        vals = []
+        with open(fp, "r", encoding="utf-8") as f:
+            for ln in f:
+                ln = ln.strip()
+                if not ln: continue
+                vals.append(float(re.sub(r"[^\d\.\-eE+]", "", ln)))
+        if len(vals) != 6:
+            return None
+        A, D, B, E, C, F = vals
+        return (A, B, C, D, E, F)
+    except Exception:
+        return None
 
 def _affine_from_geotiff(fp: Path) -> Optional[Affine]:
     if not tifffile: return None
@@ -48,54 +78,43 @@ def _affine_from_geotiff(fp: Path) -> Optional[Affine]:
                 A = m[0]; B = m[1]; C = m[3]
                 D = m[4]; E = m[5]; F = m[7]
                 return (A, B, C, D, E, F)
-            ps = tags.get("ModelPixelScaleTag")
-            tp = tags.get("ModelTiepointTag")
-            if ps and tp:
-                sx, sy = float(ps.value[0]), float(ps.value[1])
-                vals = list(tp.value)
-                i, j, _k, X0, Y0, _Z0 = vals[0:6]
-                A, B, C = sx, 0.0, X0 - i * sx
-                D, E, F = 0.0, -sy, Y0 + j * sy
+            # fallback: ModelPixelScale + ModelTiepoint
+            mps = tags.get("ModelPixelScaleTag")
+            mtp = tags.get("ModelTiepointTag")
+            if mps and mtp:
+                sx, sy, _ = list(mps.value)
+                tie = list(mtp.value)
+                # tiepoint format: (i,j,k, x,y,z) repeating; we use the first
+                i, j, _k, X, Y, _Z = tie[:6]
+                A = sx; B = 0.0; C = X - sx * i
+                D = 0.0; E = -sy; F = Y + sy * j
                 return (A, B, C, D, E, F)
     except Exception:
         return None
     return None
 
-def get_affine(img_path: Path) -> Optional[Affine]:
-    wf = _find_worldfile(img_path)
+def get_affine(image_path: Path) -> Optional[Affine]:
+    wf = _find_worldfile(image_path)
     if wf:
-        try: return _load_worldfile(wf)
-        except Exception: pass
-    if img_path.suffix.lower() in {".tif",".tiff"}:
-        af = _affine_from_geotiff(img_path)
-        if af: return af
+        return _read_worldfile(wf)
+    if image_path.suffix.lower() in {".tif", ".tiff"}:
+        return _affine_from_geotiff(image_path)
     return None
 
-# -------- small utils --------
+def pix2geo(aff: Affine, x: float, y: float) -> Tuple[float, float]:
+    A, B, C, D, E, F = aff
+    gx = A * x + B * y + C
+    gy = D * x + E * y + F
+    return gx, gy
 
-def pix2geo(aff: Affine, col: float, row: float) -> Tuple[float, float]:
-    A,B,C,D,E,F = aff
-    X = A*col + B*row + C
-    Y = D*col + E*row + F
-    return (X, Y)
+def _finite_xy(x: float, y: float) -> bool:
+    return math.isfinite(float(x)) and math.isfinite(float(y))
 
-def _finite_xy(x, y) -> bool:
-    return (x is not None) and (y is not None) and math.isfinite(x) and math.isfinite(y)
+def _poly_wkt(poly_xy: Iterable[Tuple[float,float]]) -> str:
+    pts = ", ".join(f"{x:.6f} {y:.6f}" for (x,y) in poly_xy)
+    return f"POLYGON(({pts}))"
 
-def _csv_escape(s: str) -> str:
-    s = "" if s is None else str(s)
-    if any(ch in s for ch in [",", '"', "\n"]):
-        return '"' + s.replace('"', '""') + '"'
-    return s
-
-def _poly_wkt(coords) -> str:
-    # coords: [(x,y), ...] (no need to repeat start; we’ll close it)
-    if not coords: return "POLYGON(())"
-    ring = coords + ([coords[0]] if coords[0] != coords[-1] else [])
-    coord_str = ", ".join(f"{x:.6f} {y:.6f}" for (x,y) in ring)
-    return f"POLYGON(({coord_str}))"
-
-# -------- public API (keeps original name; now CSV-only) --------
+# -------- main export --------
 
 def export_geojson_for_image(  # noqa: API kept for start_app; now writes CSVs only
     image_path: Path,
@@ -156,7 +175,7 @@ def export_geojson_for_image(  # noqa: API kept for start_app; now writes CSVs o
             if all(_finite_xy(px,py) for (px,py) in poly_geo):
                 aoi_rows.append({"image": image_path.name, "name": name, "wkt": _poly_wkt(poly_geo)})
         if aoi_rows:
-            p = out_dir / f"{image_path.stem}__aois.csv"
+            p = _unique_path(out_dir / f"{image_path.stem}__aois.csv")
             with p.open("w", encoding="utf-8") as f:
                 f.write("image,name,wkt\n")
                 for r in aoi_rows:
@@ -165,9 +184,9 @@ def export_geojson_for_image(  # noqa: API kept for start_app; now writes CSVs o
     points_path = None
     boxes_path = None
 
-    # ---- write detections CSVs ----
+    # ---- write detections CSVs (unique names) ----
     if points_rows:
-        points_path = out_dir / f"{image_path.stem}__detections_p.csv"
+        points_path = _unique_path(out_dir / f"{image_path.stem}__detections_p.csv")
         with points_path.open("w", encoding="utf-8") as f:
             f.write("image,cls,conf,x,y\n")
             for r in points_rows:
@@ -180,7 +199,7 @@ def export_geojson_for_image(  # noqa: API kept for start_app; now writes CSVs o
                 ]) + "\n")
 
     if boxes_rows:
-        boxes_path = out_dir / f"{image_path.stem}__detections_b.csv"
+        boxes_path = _unique_path(out_dir / f"{image_path.stem}__detections_b.csv")
         with boxes_path.open("w", encoding="utf-8") as f:
             f.write("image,cls,conf,wkt\n")
             for r in boxes_rows:

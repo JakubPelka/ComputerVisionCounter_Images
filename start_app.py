@@ -65,8 +65,8 @@ def build_union_mask(h: int, w: int, aois):
         return None
 
 APP_TITLE = "ComputerVision Counter — Count anything without coding"
+# ---------- Geo export helper ----------
 
-# -------- presets / defaults (shared with ui_advanced) --------
 BUILTIN_PRESETS = {
     "Fast":     {"tile": 896,  "overlap": 0.25, "conf": 0.45, "iou_nms": 0.60,
                  "use_wbf": True, "wbf_alpha": 0.20, "wbf_iou": None, "wbf_auto": True,
@@ -715,14 +715,23 @@ class App(tk.Tk):
             self._log("[GEO] geo_export.py not found — skipping Geo export."); return
         if not dets_map:
             self._log("[GEO] No detection details provided by engine — skipping Geo export."); return
+
+        gis_dir = outdir / "gis"
+        try:
+            gis_dir.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+
         for p in imgs:
             try:
                 dets = self._normalize_dets(dets_map.get(str(p)) or dets_map.get(p) or [])
+                # pass AOI list as-is; exporter can write AOIs too if desired
                 aois = self.aoi_map.get(str(p), [])
-                geo = export_geojson_for_image(p, dets, aois, out_dir=outdir, crs_hint=None)
+                geo = export_geojson_for_image(p, dets, aois, out_dir=gis_dir, crs_hint=None)
                 if geo: self._log(f"[GEO] Wrote {geo.name}")
             except Exception as e:
                 self._log(f"[GEO] export failed for {Path(p).name}: {e}")
+# -------- presets / defaults (shared with ui_advanced) --------
 
     @staticmethod
     def _normalize_dets(raw_list):
