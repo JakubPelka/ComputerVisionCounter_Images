@@ -128,12 +128,12 @@ def install_minimal_online() -> None:
     """
     # IMPORTANT: accept newer NumPy too to avoid downgrade loops
     ensure_pkg("numpy>=1.26.4")
-
     ensure_pkg("opencv-python>=4.8.0")
     ensure_pkg("ultralytics>=8.3.0")
     ensure_pkg("shapely>=2.0.0")
     ensure_pkg("pyproj>=3.6.0")
     ensure_pkg("onnx>=1.14.0")
+    ensure_pkg("onnxruntime>=1.22.1")
 
     # ONNX Runtime: install only if neither CPU nor GPU build present
     present = _local_versions()

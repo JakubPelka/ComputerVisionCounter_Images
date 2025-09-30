@@ -30,7 +30,39 @@ from app_core import (
 from widgets import ScrollableFrame, AOIEditor
 import ui_panels
 from ui_advanced import open_advanced
-from legacy_pt_runner import run_legacy_pt, build_union_mask
+## Import both names if available, then provide a safe wrapper used by this file.
+from legacy_pt_runner import run_legacy_pt  # always
+try:
+    from legacy_pt_runner import build_union_mask as _build_union_mask
+except Exception:
+    _build_union_mask = None
+try:
+    from legacy_pt_runner import build_union_masks as _build_union_masks
+except Exception:
+    _build_union_masks = None
+
+def build_union_mask(h: int, w: int, aois):
+    """
+    ## Tolerant wrapper so start_app.py never breaks on singular/plural export.
+    """
+    if _build_union_mask is not None:
+        return _build_union_mask(h, w, aois)
+    if _build_union_masks is not None:
+        return _build_union_masks(h, w, aois)
+    # Last-resort local implementation (keeps AOI saving working even if imports failed)
+    try:
+        import numpy as _np, cv2 as _cv2
+        m = _np.zeros((h, w), dtype=_np.uint8)
+        for a in (aois or []):
+            pts = a.get("polygon") or a.get("points") or a.get("pts") or []
+            P = _np.asarray(pts, dtype=_np.float32)
+            if P.ndim == 2 and P.shape[1] == 2 and len(P) >= 3:
+                P[:,0] = _np.clip(P[:,0], 0, w-1)
+                P[:,1] = _np.clip(P[:,1], 0, h-1)
+                _cv2.fillPoly(m, [P.astype(_np.int32)], 255)
+        return m if m.any() else None
+    except Exception:
+        return None
 
 APP_TITLE = "ComputerVision Counter — Count anything without coding"
 
@@ -236,7 +268,7 @@ class App(tk.Tk):
             messagebox.showinfo("AOI", "Select input images first.")
             return
 
-        # reuse AOIs from disk silently
+        # Reuse AOIs from disk silently
         self._import_aois_from_folder_for_images(imgs, silent=True)
 
         idx = 0
@@ -252,8 +284,13 @@ class App(tk.Tk):
             pass
 
         def save_current():
-            p = imgs[idx]
-            self.aoi_map[str(p)] = editor.get_aois()
+            ## Only persist if the editor actually has an image loaded
+            try:
+                if editor.img_path:
+                    p = imgs[idx]
+                    self.aoi_map[str(p)] = editor.get_aois()
+            except Exception as e:
+                self._log(f"[AOI] save_current error: {e}")
 
         def on_change(_aois):
             save_current()
@@ -270,25 +307,42 @@ class App(tk.Tk):
 
         def load_idx(i):
             nonlocal idx
-            save_current()
+            # Only save if we have an actual image to avoid wiping AOIs with an empty list
+            if editor.img_path:
+                save_current()
             i = max(0, min(i, len(imgs)-1)); idx = i
             p = imgs[i]
             editor.load_image(str(p))
             aois = self.aoi_map.get(str(p), None)
             editor.set_aois(aois if aois is not None else [])
             idx_var.set(f"{i+1}/{len(imgs)}")
+            # Force first render in case the window hasn't fully laid out yet
+            try:
+                top.update_idletasks()
+                editor._on_configure()
+            except Exception:
+                pass
 
         def on_close():
-            save_current()
-            # persist immediately to INPUT/aoi & aoi_masks
-            self._export_aois_to_input(imgs, force=True)
-            if any(self.aoi_map.get(str(p)) for p in imgs):
-                self.use_aoi.set(True)
-                self._log("[AOI] AOIs saved; Use AOI enabled.")
-            top.destroy()
+            ## Always close even if export fails
+            try:
+                if editor.img_path:
+                    save_current()
+                self._export_aois_to_input(imgs, force=True)
+                if any(self.aoi_map.get(str(p)) for p in imgs):
+                    self.use_aoi.set(True)
+                    self._log("[AOI] AOIs saved; Use AOI enabled.")
+            except Exception as e:
+                self._log(f"[AOI] Close/export error: {e}")
+            finally:
+                try: top.destroy()
+                except Exception: pass
 
         top.protocol("WM_DELETE_WINDOW", on_close)
+
+        # Load the very first image and force a render so the editor never opens blank
         load_idx(0)
+
 
     def import_aois_from_input(self):
         imgs = self._resolve_inputs()
@@ -538,41 +592,30 @@ class App(tk.Tk):
         def work():
             try:
                 if use_legacy_pt:
-                    try:
-                        result = run_legacy_pt(
-                            imgs=imgs, outdir=outdir, model_path=model,
-                            tile=int(base["tile"]), overlap=float(base["overlap"]),
-                            conf=float(base["conf"]), iou=float(base["iou_nms"]),
-                            selected_classes=self._selected_classes(),
-                            overlay_mode=self.overlay_mode.get(),
-                            draw_centroid=bool(self.draw_centroid.get()),
-                            aoi_mode=self.aoi_mode.get(),
-                            aoi_box_frac=float(self.aoi_box_frac.get()),
-                            aoi_map=self.aoi_map if self.use_aoi.get() else {},
-                            progress_cb=lambda pct, txt: self._tsafe(lambda: (self._smooth_to(pct), self.progress_label.set(txt))),
-                            stop_cb=lambda: self._stop,
-                            class_id_to_name=(self.class_names or None),
-                            logger=self._log,
-                            return_dets=True  # newer signature: will raise TypeError on older
-                        )
+                    ## --- SINGLE RUN, tolerant to both return shapes ---
+                    result = run_legacy_pt(
+                        imgs=imgs, outdir=outdir, model_path=model,
+                        tile=int(base["tile"]), overlap=float(base["overlap"]),
+                        conf=float(base["conf"]), iou=float(base["iou_nms"]),
+                        selected_classes=self._selected_classes(),
+                        overlay_mode=self.overlay_mode.get(),
+                        draw_centroid=bool(self.draw_centroid.get()),
+                        aoi_mode=self.aoi_mode.get(),
+                        aoi_box_frac=float(self.aoi_box_frac.get()),
+                        aoi_map=self.aoi_map if self.use_aoi.get() else {},
+                        progress_cb=lambda pct, txt: self._tsafe(lambda: (self._smooth_to(pct), self.progress_label.set(txt))),
+                        stop_cb=lambda: self._stop,
+                        class_id_to_name=(self.class_names or None),
+                        logger=self._log,
+                        return_dets=True,   # request (totals, dets_map)
+                    )
+
+                    dets_map = {}
+                    totals = {}
+                    if isinstance(result, tuple) and len(result) == 2:
                         totals, dets_map = result
-                    except TypeError:
-                        totals = run_legacy_pt(
-                            imgs=imgs, outdir=outdir, model_path=model,
-                            tile=int(base["tile"]), overlap=float(base["overlap"]),
-                            conf=float(base["conf"]), iou=float(base["iou_nms"]),
-                            selected_classes=self._selected_classes(),
-                            overlay_mode=self.overlay_mode.get(),
-                            draw_centroid=bool(self.draw_centroid.get()),
-                            aoi_mode=self.aoi_mode.get(),
-                            aoi_box_frac=float(self.aoi_box_frac.get()),
-                            aoi_map=self.aoi_map if self.use_aoi.get() else {},
-                            progress_cb=lambda pct, txt: self._tsafe(lambda: (self._smooth_to(pct), self.progress_label.set(txt))),
-                            stop_cb=lambda: self._stop,
-                            class_id_to_name=(self.class_names or None),
-                            logger=self._log
-                        )
-                        dets_map = None
+                    else:
+                        totals = result if isinstance(result, dict) else {}
 
                     self._maybe_export_geojson(imgs, outdir, dets_map)
 
