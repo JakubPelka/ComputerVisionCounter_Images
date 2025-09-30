@@ -15,7 +15,7 @@ def build_main_ui(app):
     app.files_label = tk.Label(files, text="— no files selected —"); app.files_label.pack(side="left", padx=8)
     tk.Button(files, text="Clear", command=app.clear_files).pack(side="left", padx=(8,0))
     _row_browse(paths, "Output folder (optional):", app.output_dir, app.browse_output, is_dir=True)
-    _row_browse(paths, "Weights (.pt / .onnx):", app.weights_path, app.browse_weights, is_dir=False)
+    _row_browse(paths, "Weights (.pt):", app.weights_path, app.browse_weights, is_dir=False)
 
     # Quality (3 presets)
     qf = tk.LabelFrame(root, text="Quality presets (1 Fast • 2 Balanced • 3 Ultra)"); qf.pack(fill="x", pady=(0,6))

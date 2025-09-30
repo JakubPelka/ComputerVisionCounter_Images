@@ -350,16 +350,15 @@ def run_legacy_pt(
                 if nm not in aoi_by_class: aoi_by_class[nm] = {}
                 aoi_by_class[nm][cname] = aoi_by_class[nm].get(cname, 0) + 1
 
-            # Compose summary text
+            # Compose summary text (spaces only as separators)
             lines = [f"Total: {total_count}"]
             for nm in sorted(aoi_totals.keys()):
-                # classes string like: "(car 10, bus 5)"
                 classes_str = ""
                 if aoi_by_class.get(nm):
                     cls_parts = [f"{cn} {aoi_by_class[nm][cn]}" for cn in sorted(aoi_by_class[nm].keys())]
                     classes_str = " (" + ", ".join(cls_parts) + ")"
                 lines.append(f"{nm}: {aoi_totals[nm]}{classes_str}")
-            text = "  •  ".join(lines)
+            text = " ".join(lines)  # ← simple spaces; no bullets/Unicode
 
             # draw box bottom-right
             (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)

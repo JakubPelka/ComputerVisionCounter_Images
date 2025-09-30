@@ -228,7 +228,7 @@ class App(tk.Tk):
         pth = filedialog.askopenfilename(
             title="Select weights (.pt or .onnx)",
             initialdir=str(start_dir.resolve()),
-            filetypes=[("Models","*.pt *.onnx"), ("All files","*.*")]
+            filetypes=[("Models","*.pt"), ("All files","*.*")]
         )
         if not pth: return
         self.weights_path.set(pth)
@@ -554,9 +554,9 @@ class App(tk.Tk):
         imported = self._import_aois_from_folder_for_images(imgs, silent=True)
         if imported:
             self._log(f"[AOI] Reused existing AOIs for {imported} images.")
-        if not self.use_aoi.get() and (any(self.aoi_map.get(str(p)) for p in imgs) or imported):
-            self.use_aoi.set(True)
-            self._log("[AOI] AOIs found — Use AOI enabled automatically.")
+#        if not self.use_aoi.get() and (any(self.aoi_map.get(str(p)) for p in imgs) or imported):
+#            self.use_aoi.set(True)
+#            self._log("[AOI] AOIs found — Use AOI enabled automatically.")
 
         if self.class_names and not self._selected_classes():
             messagebox.showwarning("Classes", "Select at least one class."); return
