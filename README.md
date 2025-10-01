@@ -1,250 +1,137 @@
 # ComputerVision Counter — Count anything without coding
 
-A desktop app for **counting objects in images** with your own YOLO models — **no coding required**. Add images, pick classes, (optionally) draw Areas of Interest (AOIs), and let the app count and annotate. Works offline and installs all Python packages into a **local `pkgs/` folder** so it won’t touch your system environment.
+A desktop app for **counting objects in images** with your own YOLO models — **no coding required**. Add images, pick classes, (optionally) draw Areas of Interest (AOIs), and let the app count and annotate. Works offline and installs all Python packages into a **local **``** folder** so it won’t touch your system environment.
 
-> **Status**: Stable for YOLO **`.pt`** models (Ultralytics). **ONNX** is present but **experimental**; support is improving. Segmentation models are planned next.
+> **Status (this release):** Supports Ultralytics **YOLO **`` models. **ONNX is disabled** for now and returns in the next release.
 
 ---
 
 ## ✨ Highlights
 
-* **No‑code counting** with your own YOLO models (v5–v8 `.pt`; ONNX experimental).
+* **No‑code counting** with your own YOLO `` models.
 * **AOI editor** (multi‑polygon per image, named zones). Draw once, auto‑save per image.
-* **Flexible counting modes**: by **centroid** (default) or by **box‑overlap** fraction.
-* **Per‑class filters**: turn classes on/off; require at least one selected.
-* **Advanced presets** (Fast/Balanced/Ultra) + full expert panel (tiling, NMS/WBF, seam de‑dup, etc.).
-* **Strict confidence thresholding**: detections must be **strictly greater than** the chosen `conf` value (no rounding).
-* **Beautiful overlays**: boxes/labels or centroids, plus **bottom‑right per‑class totals**.
-* **GIS‑friendly CSV export** for georeferenced images (points & boxes).
-* **Full detections CSV**: run‑level `detections_full.csv` with all kept detections.
-* **Local, portable install**: packages go to `./pkgs` or `./_pkgs`.
+* **Flexible AOI filtering**: by **centroid** (default) or **box‑overlap** fraction.
+* **AOI toggle respected**: when **Use AOI = OFF**, filtering is disabled and overlays show **only a global total with per‑class breakdown**.
+* **Per‑class filters**: choose which classes to count.
+* **Advanced presets** (Fast/Balanced/Ultra) + expert panel (tiling, NMS/WBF, seam de‑dup, etc.).
+* **Strict confidence**: detections must be **strictly greater than** the chosen `conf` value.
+* **Clean overlays**: boxes/labels or centroids, plus a **bottom‑right summary**:
+
+  * With AOIs → `Total: 45   AOI1: 15 (car 10, bus 5)   AOI2: 30 (car 18, bus 12)`
+  * Without AOIs → `Total: 45 (car 28, bus 17)`
+* **GIS‑friendly CSV export** for georeferenced images (points & boxes) with **non‑destructive filenames** (no overwrites).
+* **Full detections CSV**: run‑level `detections_full.csv` with AOI names.
+* **Immediate abort** with watchdog; label reliably flips to **Aborted.**
 
 ---
 
-## 🖥️ System requirements
+## 🖥️ Requirements
 
-* **OS**: Windows 10/11 (primary target). macOS/Linux likely fine but untested.
-* **Python**: 3.10–3.12 (tested with 3.12).
-* **GPU**: Optional. If CUDA is available, the app will auto‑use it; otherwise CPU fallback.
+* **Windows 10/11** (primary target). macOS/Linux likely fine but untested.
+* **Python 3.10–3.12** (tested with 3.12).
+* **GPU** optional (CUDA auto‑used if available; CPU otherwise).
 
-> **Models are not included.** Bring your own YOLO weights (`.pt` recommended for now; `.onnx` experimental).
-
----
-
-## 📦 Installation (local, isolated)
-
-1. **Clone or unzip** this project.
-2. (Optional) Create/activate a virtual environment.
-3. Run:
-
-   ```bash
-   python bootstrap_env.py
-   ```
-
-   This installs all required packages into `./pkgs` (or `./_pkgs`) and wires `sys.path` accordingly.
-4. Start the app:
-
-   ```bash
-   python start_app.py
-   ```
-
-> The app will create an `./output/` folder next to the scripts (used as the default output path). Input and weights are **not prefilled** — click **Browse…** to choose them.
+> **Models are not included.** Bring your own YOLO weights (`.pt`).
 
 ---
 
-## 📁 Recommended project layout
+## 📦 Install (local, isolated)
 
-```
-project/
-├─ start_app.py
-├─ app_core.py
-├─ engine_loader.py
-├─ legacy_pt_runner.py
-├─ ui_panels.py, ui_advanced.py, widgets.py
-├─ bootstrap_env.py
-├─ pkgs/                 # local site-packages (auto‑created)
-├─ weights/              # put your .pt / .onnx here (not required)
-├─ input/                # your images (optional convenience)
-└─ output/               # results are written here by default
+```bash
+python bootstrap_env.py
+python start_app.py
 ```
 
----
-
-## 🚀 Quick start (typical workflow)
-
-1. **Open images**: Click **Browse…** (Input) and select a folder, or select specific files.
-2. **Select weights**: Click **Browse…** (Model) and choose your `.pt` (recommended) or `.onnx` (experimental).
-3. **Pick classes**: The class list populates from your model. Check at least one.
-4. **(Optional) Define AOIs**: Click **AOI Editor**.
-
-   * Draw polygons (multi‑AOI supported)
-   * **Finish** polygon: **Ctrl+Enter**
-   * **Undo last vertex**: **Ctrl+Backspace**
-   * **Name zones** when prompted
-   * AOIs are **auto‑saved** per image to `input/aoi/<image>.json` and `input/aoi_masks/<image>.png`.
-   * The editor can **import** an AOI JSON to review/extend and **export** a new one.
-5. **Choose a preset** (Fast/Balanced/Ultra) or open **Advanced** to fine‑tune.
-6. Click **Start**. Progress updates per tile. **Abort** cancels safely.
+This installs dependencies into `./pkgs` (or `./_pkgs`) and starts the app. Input and weights are **not prefilled** — click **Browse…** to choose them. Default output is `./output/`.
 
 ---
 
-## 🧠 Engines & devices (auto)
+## 🚀 Workflow
 
-* The app selects engine/device automatically:
-
-  * **`.pt`** → legacy PyTorch path (Ultralytics YOLO).
-  * **`.onnx`** → ONNX Runtime (CPU/GPU where available; **experimental**).
-  * **Device**: GPU if CUDA is available; otherwise **CPU**.
-* Manual engine/device selectors were removed from the UI to keep it simple.
-
-> If an ONNX model fails with shape/stride/NMS issues, prefer the original `.pt` for now.
+1. **Browse… (Input)** → pick a folder or specific files.
+2. **Browse… (Model)** → choose a YOLO `` file. Class list auto‑loads.
+3. **Select classes** → at least one.
+4. **(Optional) AOIs** → open **AOI Editor**, draw named polygons; saved to `input/aoi/*.json` and `input/aoi_masks/*.png`.
+5. Choose **Fast / Balanced / Ultra** preset (or tweak **Advanced**).
+6. **Start**. Use **Abort** to cancel immediately; label changes from *Aborting…* to *Aborted.* when the worker stops.
 
 ---
 
-## 🧭 AOI behavior (important)
+## 🧭 AOI behavior
 
-* When you close the AOI editor (or navigate images) your polygons are **auto‑persisted** to `input/aoi` and `input/aoi_masks`.
-* If AOIs exist for an image, the main app **auto‑enables** “Use AOI” and reuses them next run.
-* **AOI modes**:
+* AOIs are persisted per image in `input/aoi/…` and `input/aoi_masks/…`.
+* **Use AOI = ON**: detections must lie **in any AOI** (by centroid or box‑overlap). The overlay shows **Total + per‑AOI counts** (each with per‑class breakdown).
+* **Use AOI = OFF**: AOIs (even if present on disk) are **ignored**; the overlay shows **only Total + global per‑class breakdown**.
 
-  * **Centroid**: a detection counts if the **box center** lies inside any AOI.
-  * **Box overlap**: counts if AOI overlap area ≥ **`aoi_box_frac`** (e.g., 0.20 = 20%).
+**Editor hotkeys**
 
-**Hotkeys in AOI editor**
-
-* Finish polygon: **Ctrl+Enter**
-* Undo last vertex: **Ctrl+Backspace**
-
-**AOI JSON schema (saved in `input/aoi/*.json`)**
-
-```json
-{
-  "image": "example.jpg",
-  "aois": [
-    { "name": "Zone A", "polygon": [[x,y], [x,y], ...] },
-    { "name": "Zone B", "polygon": [[x,y], ...] }
-  ]
-}
-```
+* Finish polygon: **Ctrl + Enter**
+* Undo vertex: **Ctrl + Backspace**
 
 ---
 
-## 🧪 Advanced settings (summary)
+## 🧪 Advanced (short)
 
-Open **Advanced** to adjust:
-
-* **Preset**: Fast / Balanced / Ultra (also available as a slider in main UI).
-* **Tiling**
-
-  * `tile` (px): inference patch size.
-  * `overlap` (0–1): overlap fraction between tiles.
-* **Inference thresholds**
-
-  * `conf`: **strict** confidence threshold. A detection passes **only if `conf_raw > conf_threshold`**.
-  * `iou_nms`: NMS IoU threshold.
-* **WBF (Weighted Box Fusion)**
-
-  * `Use WBF`: fuse overlapping boxes class‑wise.
-  * `Auto WBF IoU`: chooses a sensible IoU for your preset; you can override.
-  * `WBF IoU`: fusion overlap threshold.
-  * `WBF Alpha`: score weighting exponent.
-* **Seam de‑dup** (anti‑tile‑edge duplicates)
-
-  * `Seam band factor`: how close to tile edges the penalty applies.
-  * `Seam weight`: how strong the penalty is near seams.
-* **Overlay**
-
-  * `boxes` / `boxes_conf` (default) / `centroid` and optional centroid dot.
-
-> Tooltips in the Advanced window explain each parameter in user‑friendly language.
+* **Tiling**: `tile` (px), `overlap` (0–1)
+* **Thresholds**: strict `conf` (kept if `conf_raw > conf`), `iou_nms`
+* **WBF**: `use_wbf`, `wbf_iou` (auto if empty), `wbf_alpha`
+* **Seam de‑dup**: `seam_band_factor`, `seam_weight`
+* **Overlay**: `boxes` / `boxes_conf` / `centroid` and optional centroid dot
 
 ---
 
 ## 🧾 Outputs
 
-All outputs go to the **Output** path (default `./output/`). The app won’t overwrite — it adds suffixes as needed.
+All in the chosen **Output** folder (default `./output/`). Files get numeric suffixes to avoid overwrites.
 
-### 1) Annotated previews
-
-* `annotated/<image>_ann.jpg` — detections + labels (class + conf) or centroids, **plus** bottom‑right per‑class totals.
-
-### 2) Per‑image summary
-
-* `results_per_image.csv` — counts per class for each image.
-* `results_totals.json` — total counts across all images.
-
-### 3) Full detections (run level)
-
-* `detections_full.csv` — every **kept** detection (after conf + AOI):
-
-  * Columns: `image, cls, conf, x1, y1, x2, y2, cx, cy, in_aoi`
-  * Coordinates are **image pixels**.
-
-### 4) GIS‑friendly CSV (for georeferenced images)
-
-* For images with valid georeference (GeoTIFF or worldfile), we also write:
-
-  * `<image>_3857__detections_p.csv` — **points** (centroids)
-  * `<image>_3857__detections_b.csv` — **polygons** (box corners)
-* Columns include map coordinates so you can add them directly in GIS (QGIS/ArcGIS).
-* If an image isn’t georeferenced, CSVs fall back to pixel coordinates.
-
-> GeoJSON export had visibility issues in some GIS apps; CSV export is the current recommended path.
+* `annotated/<image>_annotated.jpg` — detections + bottom‑right summary (conditional AOI logic above).
+* `results_per_image.csv` — per‑image class counts.
+* `results_totals.json` — run totals.
+* `detections_full.csv` — kept detections (with AOI name when AOI is ON).
+* `gis/<image>__detections_p.csv` & `gis/<image>__detections_b.csv` — world‑coords for points/boxes (only if the image is georeferenced).
 
 ---
 
-## 🔍 Logging & progress
+## 🔧 Troubleshooting
 
-* **Log panel** in the app + `output/run.log` on disk.
-* Useful debug lines:
-
-  * `[DEBUG] conf threshold (raw, strict '>')` — shows the exact numeric threshold used.
-  * Per‑image kept counts after NMS and conf filtering.
-* **Progress bar** is tile‑based and smoothed; ETA shows as you go.
+* **No detections** → verify classes, `conf` not too high, and model fits the data.
+* **Overlay vs CSV mismatch** → CSV uses raw floats and strict `>`; overlay is rounded.
 
 ---
 
-## 🧩 Models
+## 📚 Project layout
 
-* **Recommended**: Ultralytics `.pt` models (YOLOv5–v8).
-* **ONNX (experimental)**: Some models may require specific export flags (dynamic shapes, opset, built‑in NMS). If you encounter "stride"/shape errors or empty outputs, switch back to `.pt` for now.
-* **Segmentation**: Planned (not yet in the image workflow).
-
-> Models are not bundled. Make sure your model’s classes align with your expectations; the app reads names from the model.
-
----
-
-## 🛠️ Tips & gotchas
-
-* Ensure at least **one class** is selected before starting.
-* If AOIs exist in `input/aoi/`, the app will reuse them automatically.
-* **Centroid mode** is usually best for counting discrete objects; use **box overlap** for large/irregular detections.
-* For tiled inference, larger `tile` + higher `overlap` improve quality but slow things down.
-* If annotation previews look empty while counts exist, check the **confidence** and **overlay mode**.
+```
+start_app.py
+legacy_pt_runner.py
+app_core.py
+engine_loader.py
+ui_panels.py, ui_advanced.py, widgets.py
+geo_export.py
+bootstrap_env.py
+pkgs/  weights/  input/  output/
+```
 
 ---
 
-## 🐞 Troubleshooting
+## 🗺️ Roadmap (next release)
 
-* **I see detections with conf < threshold**
+**Features**
 
-  * The app uses **strict `>`** on the **raw** confidence value (no rounding). If you still see smaller numbers, verify the **raw value** in `detections_full.csv` — UI labels round to 2 decimals for display only.
-* **Geo CSVs show up but not where I expect**
+* Bring back **ONNX** runtime support for `.onnx` models.
+* Optional: AOI summary order by **count** (desc) instead of name.
+* Atomic file writes (tmp → rename) to avoid partial artifacts on abort.
+* Config file for defaults (YAML), CLI/batch mode.
+* Unit tests for AOI math and GIS exporters.
 
-  * Confirm the image is truly georeferenced and the worldfile/CRS is correct. CSVs are preferred over GeoJSON for compatibility.
-* **ONNX model fails (stride/shape/NMS)**
+**Refactors / cleanup**
 
-  * This area is still evolving. Prefer `.pt` models for now.
+* Extract AOI helpers to `aoi_utils.py` (normalize polygons, masks, union).
+* Move `unique_path` & friends to `utils.py` and reuse everywhere.
+* Centralize CSV/JSON writers in `app_core.py` to remove duplication.
+* Unify device/engine selection in `engine_loader.py` and pass to runners.
+* Optional `overlay.py` to consolidate drawing/summary formatting.
+* Lightweight logger helper for consistent formatting/levels.
+* Unify progress reporting (ETA + smoothing) via one helper.
 
----
-
-## 🤝 Contributing & licensing
-
-* PRs and issues welcome (bugfixes, ONNX improvements, segmentation support, docs).
-* Choose a license that fits your distribution (e.g., MIT). If you publish on Gumroad, include license text with the build.
-
----
-
-## 📣 Credits
-
-Built for GIS/vision practitioners who want **fast, reliable counts** without writing code — and for power users who enjoy the control when they need it.
+> The goal is to keep `start_app.py` thinner by moving utilities into small modules without changing current behavior.

@@ -1,138 +1,95 @@
 # ComputerVision Counter — Quick Start
 
-This guide shows how to get from zero to counting in minutes, using the same flow described in the README and product page.
+This short guide reflects the current behavior: **AOI toggle respected**, **clean overlay summary**, and **immediate abort**.
 
 ---
 
-## 1) What you need
-
-* **Windows 10/11** (officially tested)
-* **Python 3.10–3.12** installed
-* **Your own YOLO object‑detection model** (models are **not** included)
-
-  * Recommended: Ultralytics **`.pt`** weights
-  * **ONNX** is available but **experimental**
-* **Images** to process (JPG/PNG/TIFF)
-* **GPU** optional — used automatically if available; otherwise CPU
-
-> All processing runs **locally** inside the app folder. No data leaves your machine.
-
----
-
-## 2) Install (one‑time)
-
-From the project folder run:
+## 1) Install once
 
 ```bash
 python bootstrap_env.py
 ```
 
-This installs all dependencies into a local **`pkgs/`** folder so nothing touches your global Python.
+Installs dependencies into a local `./pkgs` folder (portable; no system pollution).
 
 ---
 
-## 3) Launch the app
+## 2) Launch
 
 ```bash
 python start_app.py
 ```
 
-The app opens with a clean GUI. By default, results will be written to **`./output/`** (created if missing).
+Choose **Input** and **Model** via the GUI (not prefilled). Default output is `./output/`.
 
-> Input and weights are **not prefilled** — click **Browse…** to choose them.
-
----
-
-## 4) Load data & model (3 clicks)
-
-1. **Browse… (Input)** → pick a folder **or** specific files.
-2. **Browse… (Model)** → select your **`.pt`** (recommended) or **`.onnx`** (experimental) weights.
-
-   * The class list auto‑loads from your model.
-3. **Pick classes** → at least one must be selected.
-
-> Tip: Use **batch mode** by selecting a folder with many images.
+> **Supported models:** Ultralytics **`.pt`** only. **ONNX is disabled in this release** and will arrive in the next release.
 
 ---
 
-## 5) (Optional) Define AOIs
+## 3) Load data & model
 
-Click **AOI Editor** to draw named zones per image:
-
-* **Finish polygon**: **Ctrl + Enter**
-* **Undo last vertex**: **Ctrl + Backspace**
-* AOIs are **auto‑saved** per image to `input/aoi/<image>.json` and `input/aoi_masks/<image>.png`.
-* Reopen the editor anytime to **import/export** AOIs and verify visually.
-* AOI modes in main UI:
-
-  * **Centroid** (default): a detection counts if its **box center** lies inside an AOI.
-  * **Box overlap**: counts if AOI overlap area ≥ **`aoi_box_frac`** (e.g., `0.20` = 20%).
+1. **Browse… (Input)** → pick a folder or select files.
+2. **Browse… (Model)** → choose a YOLO **`.pt`** file. Class names auto‑load.
+3. **Select classes** (at least one).
 
 ---
 
-## 6) Choose a preset (or tune Advanced)
+## 4) (Optional) Draw AOIs
 
-* **Fast / Balanced / Ultra** presets control tile size, overlap, and thresholds.
-* Click **Advanced** to adjust:
+Open **AOI Editor** and draw named polygons.
 
-  * **Tiling**: `tile` (px), `overlap` (0–1)
-  * **Thresholds**: strict `conf` (detections must be **>`conf`**), `iou_nms`
-  * **WBF**: `use_wbf`, `wbf_iou` (auto suggested), `wbf_alpha`
-  * **Seam de‑dup** (anti‑tile‑edge duplicates): `seam_band_factor`, `seam_weight`
-  * **Overlay**: boxes/labels vs centroids
+* Finish polygon: **Ctrl + Enter**
+* Undo vertex: **Ctrl + Backspace**
+* AOIs auto‑save to `input/aoi/*.json` + `input/aoi_masks/*.png`.
 
-> The **Apply anti‑seam de‑dup** button sets sensible values; the window stays open so you can compare.
+**AOI modes**
 
----
+* **Centroid** (default)
+* **Box overlap** with `aoi_box_frac` (e.g., 0.20 = 20%).
 
-## 7) Run
-
-Press **Start** (or **Ctrl + Enter**). The progress bar advances per tile and shows ETA.
-You can **Abort** any time.
+**Important:** The main **Use AOI** toggle is authoritative — if **OFF**, AOIs (even if present on disk) are **ignored**.
 
 ---
 
-## 8) Outputs (in `./output/`)
+## 5) Choose quality
 
-* **Annotated previews**: `annotated/<image>_ann.jpg` with boxes/labels or centroids **and** a bottom‑right per‑class total.
-* **Per‑image summary**: `results_per_image.csv`
-* **Run totals**: `results_totals.json`
-* **Full detections** (kept after conf/AOI): `detections_full.csv` with columns:
-  `image, cls, conf, x1, y1, x2, y2, cx, cy, in_aoi`
-* **GIS‑friendly CSVs** (if image is georeferenced):
-
-  * `<image>_3857__detections_p.csv` (points)
-  * `<image>_3857__detections_b.csv` (boxes)
-
-> The app avoids overwriting by adding numeric suffixes to output files.
+Use the **Fast / Balanced / Ultra** presets, or open **Advanced** for tiling, thresholds (strict `conf`), WBF, seam de‑dup, and overlay controls.
 
 ---
 
-## 9) Tips & gotchas
+## 6) Run & abort
 
-* **Select at least one class** before starting.
-* **Centroid** mode is best for discrete objects; use **box overlap** for large/irregular ones.
-* Larger **tile** + higher **overlap** can improve quality but takes longer.
-* Confidence labels on images are **rounded**; the filter uses **raw floats** and **strict greater‑than**.
+Click **Start**. Progress is tile‑based with ETA.
 
----
-
-## 10) Troubleshooting
-
-* **“Low‑conf detections pass my threshold”** → The filter is strict `> conf` on raw floats. Check `detections_full.csv` values.
-* **Geo exports don’t appear in GIS** → Use the **CSV** outputs (points/boxes). They’re the most compatible.
-* **ONNX errors (stride/shape/NMS)** → Try the original **`.pt`** model. ONNX support is improving.
-* **No detections** → Verify classes selected, `conf` not too high, and your model fits the data.
+Click **Abort** to stop immediately; the label changes from **Aborting…** to **Aborted.** as soon as the worker finishes the current tile.
 
 ---
 
-## FAQ (short)
+## 7) Outputs
 
-* **macOS/Linux?** Officially tested on Windows; other OS may require manual setup.
-* **Are models included?** No — bring your own weights.
-* **GPU required?** No — used automatically if available.
-* **Offline?** Yes — fully local.
+All in `./output/` (non‑destructive filenames):
+
+* `annotated/<image>_annotated.jpg`
+
+  * **With AOIs** → `Total …   AOI1 …   AOI2 …`
+  * **Without AOIs** → `Total … (per‑class breakdown)`
+* `results_per_image.csv` & `results_totals.json`
+* `detections_full.csv` (kept detections; includes AOI name when AOI is ON)
+* `gis/<image>__detections_p.csv` and `gis/<image>__detections_b.csv` for georeferenced images
 
 ---
 
-**Happy counting!** 🎯
+## 8) Tips
+
+* Ensure **at least one class** is selected.
+* Larger `tile` + higher `overlap` → better quality, slower.
+* If overlays and CSV disagree slightly, remember CSV uses raw floats and strict `>` on `conf`.
+
+---
+
+## 🔭 Roadmap (next release)
+
+* **ONNX runtime support** (first official release).
+* **Segmentation models** support.
+* **Classification models** support.
+* Further improvements to AOI handling and overlay summaries.

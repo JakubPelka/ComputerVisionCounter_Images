@@ -59,9 +59,7 @@ def _nms_numpy(xyxy: List[List[float]], scores: List[float], iou_thr: float = 0.
 # --------------------------- abort helper ---------------------------
 
 def _abort_if_needed(stop_cb):
-    """
-    ## Hard abort: raise KeyboardInterrupt as soon as the UI sets the stop flag.
-    """
+    """## Hard abort: raise KeyboardInterrupt as soon as the UI sets the stop flag."""
     try:
         if stop_cb and stop_cb():
             raise KeyboardInterrupt("ABORT")
@@ -226,7 +224,7 @@ def run_legacy_pt(
 
     N = len(imgs)
     for idx, p in enumerate(imgs, 1):
-        _abort_if_needed(stop_cb)  ## ← hard abort right at image start
+        _abort_if_needed(stop_cb)  ## hard abort at image start
         p = Path(p)
 
         img = cv2.imread(str(p))
@@ -258,7 +256,7 @@ def run_legacy_pt(
 
         for yy in ys:
             for xx in xs:
-                _abort_if_needed(stop_cb)  ## ← abort before heavy predict
+                _abort_if_needed(stop_cb)  ## abort before heavy predict
                 roi = img[yy:min(yy+tile, H), xx:min(xx+tile, W)]
                 res = model.predict(source=roi, imgsz=tile, conf=max(0.05, float(conf)), iou=float(iou),
                                     device=device, verbose=False)
@@ -302,7 +300,6 @@ def run_legacy_pt(
                     if union_mask is None or not union_mask.any():
                         in_aoi = False
                     else:
-                        # quick check with union, then pick best mask by fraction
                         if bbox_aoi_overlap_frac(b, union_mask) <= 0.0:
                             in_aoi = False
                         else:
@@ -323,16 +320,22 @@ def run_legacy_pt(
             cnt[cname] = cnt.get(cname, 0) + 1
         per_image_counts.append((p.name, cnt))
 
-        # --- detections_full rows (aoi is now a string name) ---
+        # --- detections_full rows ---
         for (x1,y1,x2,y2), s, cid, aoi_nm in sel:
             cx, cy = bbox_center((x1,y1,x2,y2))
             full_rows.append([p.name, id2name.get(cid, str(cid)), f"{s:.6f}",
                               f"{x1:.2f}", f"{y1:.2f}", f"{x2:.2f}", f"{y2:.2f}",
                               f"{cx:.2f}", f"{cy:.2f}", (aoi_nm or "")])
 
-        # --- annotated overlay (AOIs + detections + single summary box) ---
+        # ---------------------------------------------------------------------
+        # Annotated image: ALWAYS write one, even if overlay_mode == 'off'
+        # We draw polylines/boxes only when overlay_mode != 'off', but we
+        # always add the bottom-right summary and save the image.
+        # ---------------------------------------------------------------------
+        vis = img.copy()
+
         if overlay_mode and overlay_mode != "off":
-            vis = img.copy()
+            # AOI outlines (if any)
             if aois:
                 for nm, poly in aois:
                     if poly and len(poly) >= 3:
@@ -341,6 +344,7 @@ def run_legacy_pt(
                         pts[:,1] = np.clip(pts[:,1], 0, H-1)
                         cv2.polylines(vis, [pts], isClosed=True, color=(255,200,0), thickness=2)
 
+            # Detection rectangles / confidences
             for (x1, y1, x2, y2), s, cid, _aoi_nm in sel:
                 color = (0,255,0)
                 cv2.rectangle(vis, (int(x1), int(y1)), (int(x2), int(y2)), color, 2)
@@ -352,10 +356,22 @@ def run_legacy_pt(
                     cv2.putText(vis, label, (int(x1), max(0, int(y1)-3)),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1, cv2.LINE_AA)
 
-            # ---- bottom-right summary is already simplified in your version ----
-            total_count = len(sel)
-            aoi_totals: Dict[str,int] = {}
-            aoi_by_class: Dict[str, Dict[str,int]] = {}
+        # ---- bottom-right summary (AOI-aware) ----
+        total_count = len(sel)
+
+        # Global per-class breakdown
+        overall_by_class: Dict[str, int] = {}
+        for _b, _s, cid, _aoi_nm in sel:
+            cname = id2name.get(cid, str(cid))
+            overall_by_class[cname] = overall_by_class.get(cname, 0) + 1
+
+        # AOIs are considered active only if mode is centroid/box AND polygons exist
+        aois_active = (mode in ("centroid", "box") and len(aois) > 0)
+
+        if aois_active:
+            # Per-AOI breakdown
+            aoi_totals: Dict[str, int] = {}
+            aoi_by_class: Dict[str, Dict[str, int]] = {}
             for _b, _s, cid, aoi_nm in sel:
                 nm = aoi_nm or "AOI"
                 aoi_totals[nm] = aoi_totals.get(nm, 0) + 1
@@ -370,20 +386,34 @@ def run_legacy_pt(
                     cls_parts = [f"{cn} {aoi_by_class[nm][cn]}" for cn in sorted(aoi_by_class[nm].keys())]
                     classes_str = " (" + ", ".join(cls_parts) + ")"
                 lines.append(f"{nm}: {aoi_totals[nm]}{classes_str}")
-            text = " ".join(lines)
+        else:
+            # Only total + global per-class breakdown
+            classes_str = ""
+            if overall_by_class:
+                cls_parts = [f"{cn} {overall_by_class[cn]}" for cn in sorted(overall_by_class.keys())]
+                classes_str = " (" + ", ".join(cls_parts) + ")"
+            lines = [f"Total: {total_count}{classes_str}"]
 
-            (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)
-            h, w = vis.shape[:2]; pad = 8
-            x2b, y2b = w - pad, h - pad
-            x1b, y1b = max(0, x2b - tw - 2*pad), max(0, y2b - th - 2*pad)
-            cv2.rectangle(vis, (x1b, y1b), (x2b, y2b), (0,0,0), -1)
-            cv2.putText(vis, text, (x1b+pad, y2b-pad),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255,255,255), 2, cv2.LINE_AA)
+        text = "   ".join(lines)  # spaces only (no special bullets)
 
-            out_img = unique_path(prv_dir / f"{p.stem}_annotated.jpg")
-            try: cv2.imwrite(str(out_img), vis)
-            except Exception as e: logger(f"[WARN] cannot write annotated image: {e}")
+        # draw summary box bottom-right
+        (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)
+        h, w = vis.shape[:2]; pad = 8
+        x2b, y2b = w - pad, h - pad
+        x1b, y1b = max(0, x2b - tw - 2*pad), max(0, y2b - th - 2*pad)
+        cv2.rectangle(vis, (x1b, y1b), (x2b, y2b), (0,0,0), -1)
+        cv2.putText(vis, text, (x1b+pad, y2b-pad),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255,255,255), 2, cv2.LINE_AA)
 
+        out_img = unique_path(prv_dir / f"{p.stem}_annotated.jpg")
+        try:
+            ok = cv2.imwrite(str(out_img), vis)
+            if not ok:
+                logger(f"[WARN] OpenCV refused to write annotated image for {p.name}")
+        except Exception as e:
+            logger(f"[WARN] cannot write annotated image: {e}")
+
+        # --- dets map for GIS export / CSV ---
         dets_map[str(p)] = [
             {
                 "cls": id2name.get(cid, str(cid)),
@@ -395,7 +425,7 @@ def run_legacy_pt(
             for (x1,y1,x2,y2), s, cid, aoi_nm in sel
         ]
 
-        _abort_if_needed(stop_cb)  ## ← abort before end-of-image progress
+        _abort_if_needed(stop_cb)  ## abort before end-of-image progress
         frac_all = idx / max(1, N)
         _progress(frac_all * 100.0, _eta_str(time() - start_t, frac_all))
 

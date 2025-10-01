@@ -1,10 +1,12 @@
 # start_app.py — main app entry for ComputerVision Counter
 from __future__ import annotations
-import sys, json, time, threading, traceback, os
+
+import sys, json, time, threading, traceback
 from pathlib import Path
 import tkinter as tk
 from tkinter import filedialog, messagebox
 
+## Make local vendored packages importable
 def _add_local_pkgs():
     here = Path(__file__).parent.resolve()
     for d in ("pkgs", "_pkgs"):
@@ -13,25 +15,31 @@ def _add_local_pkgs():
             sys.path.insert(0, str(p))
 _add_local_pkgs()
 
+## Optional OpenCV (used for AOI mask export)
 try:
     import cv2
 except Exception:
     cv2 = None
 
+## Optional GIS exporter — called only if present
 try:
     from geo_export import export_geojson_for_image
 except Exception:
     export_geojson_for_image = None
 
+## App core utilities and engine gateway
 from app_core import (
     InferConfig, ModelEngine, collect_images,
     save_csv, save_json, save_run_metadata
 )
+
+## UI helpers
 from widgets import ScrollableFrame, AOIEditor
 import ui_panels
 from ui_advanced import open_advanced
-## Import both names if available, then provide a safe wrapper used by this file.
-from legacy_pt_runner import run_legacy_pt  # always
+
+## Legacy .pt runner (used when engine=auto/pt and model is .pt)
+from legacy_pt_runner import run_legacy_pt
 try:
     from legacy_pt_runner import build_union_mask as _build_union_mask
 except Exception:
@@ -40,6 +48,7 @@ try:
     from legacy_pt_runner import build_union_masks as _build_union_masks
 except Exception:
     _build_union_masks = None
+
 
 def build_union_mask(h: int, w: int, aois):
     """
@@ -51,18 +60,20 @@ def build_union_mask(h: int, w: int, aois):
         return _build_union_masks(h, w, aois)
     # Last-resort local implementation (keeps AOI saving working even if imports failed)
     try:
-        import numpy as _np, cv2 as _cv2
+        import numpy as _np
+        import cv2 as _cv2
         m = _np.zeros((h, w), dtype=_np.uint8)
         for a in (aois or []):
             pts = a.get("polygon") or a.get("points") or a.get("pts") or []
             P = _np.asarray(pts, dtype=_np.float32)
             if P.ndim == 2 and P.shape[1] == 2 and len(P) >= 3:
-                P[:,0] = _np.clip(P[:,0], 0, w-1)
-                P[:,1] = _np.clip(P[:,1], 0, h-1)
+                P[:, 0] = _np.clip(P[:, 0], 0, w - 1)
+                P[:, 1] = _np.clip(P[:, 1], 0, h - 1)
                 _cv2.fillPoly(m, [P.astype(_np.int32)], 255)
         return m if m.any() else None
     except Exception:
         return None
+
 
 APP_TITLE = "ComputerVision Counter — Count anything without coding"
 
@@ -80,13 +91,21 @@ BUILTIN_PRESETS = {
 }
 DEFAULT_QUALITY_NAME = "Ultra"
 
+
 def _quality_to_name_snapped(qvalue: float) -> tuple[int, str]:
+    """
+    ## Snap a continuous slider value 1..3 to {1,2,3} and name {Fast,Balanced,Ultra}
+    """
     v = float(qvalue)
     snap = 1 if v < 1.5 else 2 if v < 2.5 else 3
     name = "Fast" if snap == 1 else "Balanced" if snap == 2 else "Ultra"
     return snap, name
 
+
 def auto_wbf_iou(qname: str, nms: float) -> float:
+    """
+    ## Reasonable default WBF IoU based on quality & NMS
+    """
     return 0.60 if qname == "Ultra" else max(0.55, float(nms))
 
 
@@ -102,9 +121,10 @@ class App(tk.Tk):
         self.minsize(900, 700)
 
         # selections
-        self.input_dir = tk.StringVar(value="")     # no prefill
+        self.input_dir = tk.StringVar(value="")     # do not prefill (user decides)
         self.output_dir = tk.StringVar(value="")    # will default to ./output
-        self.weights_path = tk.StringVar(value="")  # no prefill
+        self.weights_path = tk.StringVar(value="")  # do not prefill
+
         self.selected_files: list[Path] = []
 
         # hidden engine/device controls (auto)
@@ -118,19 +138,19 @@ class App(tk.Tk):
         self.advanced_params = base.copy()
         self.quality.trace_add("write", lambda *_: self._on_quality_changed())
 
-        # AOI
+        # AOI state
         self.use_aoi = tk.BooleanVar(value=False)
         self.require_aoi_all = tk.BooleanVar(value=False)
         self.aoi_mode = tk.StringVar(value="centroid")  # centroid | box
         self.aoi_box_frac = tk.DoubleVar(value=0.20)
         self.aoi_map: dict[str, list[dict]] = {}
 
-        # viz
+        # viz state
         self.overlay_mode = tk.StringVar(value="boxes_conf")
         self.annotate = tk.BooleanVar(value=True)
         self.draw_centroid = tk.BooleanVar(value=False)
 
-        # classes
+        # classes controls
         self.class_names: dict[int, str] = {}
         self.class_vars: list[tuple[str, tk.BooleanVar, int]] = []
         self._class_cols = 4
@@ -143,11 +163,15 @@ class App(tk.Tk):
         self._smooth_target = 0.0
         self._smooth_job = None
 
+        # abort / threading
         self._stop = False
-        self._logfile: Path | None = None
         self._worker: threading.Thread | None = None
+        self._abort_watchdog_job = None   ## after() id for the abort watchdog
 
-        # ---- only set default OUTPUT to ./output (no prefill for input/weights)
+        # logging file
+        self._logfile: Path | None = None
+
+        # initial output dir only (no input/weights prefill)
         self._prefill_only_output()
 
         # build UI
@@ -169,14 +193,13 @@ class App(tk.Tk):
         except Exception:
             pass
         self.output_dir.set(str(cand_out))
-        # DO NOT touch input_dir / weights_path
 
     # ---------- file pickers ----------
     def browse_input(self):
-        # Start in ./input or current value; do not auto-set beforehand
         start = self.input_dir.get().strip() or str((Path(__file__).parent / "input").resolve())
         d = filedialog.askdirectory(title="Select input folder with images", initialdir=start)
-        if not d: return
+        if not d:
+            return
         self.input_dir.set(d)
         imgs = collect_images(Path(d))
         self.progress_label.set(f"{len(imgs)} images ready")
@@ -187,9 +210,10 @@ class App(tk.Tk):
         files = filedialog.askopenfilenames(
             title="Select images",
             initialdir=start,
-            filetypes=[("Images","*.jpg *.jpeg *.png *.bmp *.tif *.tiff *.webp")]
+            filetypes=[("Images", "*.jpg *.jpeg *.png *.bmp *.tif *.tiff *.webp")]
         )
-        if not files: return
+        if not files:
+            return
         self.selected_files = [Path(f) for f in files]
         self.progress_label.set(f"{len(self.selected_files)} images selected")
         self._refresh_files_label()
@@ -212,13 +236,12 @@ class App(tk.Tk):
             pass
 
     def browse_output(self):
-        # Start in ./output or current value
         start = self.output_dir.get().strip() or str((Path(__file__).parent / "output").resolve())
         d = filedialog.askdirectory(title="Select output folder", initialdir=start)
-        if d: self.output_dir.set(d)
+        if d:
+            self.output_dir.set(d)
 
     def browse_weights(self):
-        # Start in ./weights (or current weights folder), but do NOT auto-select a file
         cur = self.weights_path.get().strip()
         if cur:
             p = Path(cur)
@@ -228,11 +251,13 @@ class App(tk.Tk):
         pth = filedialog.askopenfilename(
             title="Select weights (.pt or .onnx)",
             initialdir=str(start_dir.resolve()),
-            filetypes=[("Models","*.pt"), ("All files","*.*")]
+            filetypes=[("Models", "*.pt"), ("All files", "*.*")]
         )
-        if not pth: return
+        if not pth:
+            return
         self.weights_path.set(pth)
         self._log(f"Model: {Path(pth).name}")
+        ## Try to pre-load class names without running inference
         try:
             cfg = InferConfig(model_path=pth, engine=self.engine_var.get(), device=self.device_var.get())
             eng = ModelEngine(cfg)
@@ -295,27 +320,31 @@ class App(tk.Tk):
         def on_change(_aois):
             save_current()
 
-        nav = tk.Frame(top); nav.pack(fill="x", pady=4)
+        nav = tk.Frame(top)
+        nav.pack(fill="x", pady=4)
         idx_var = tk.StringVar(value=f"1/{len(imgs)}")
-        tk.Button(nav, text="⟵ Prev", command=lambda: load_idx(idx-1)).pack(side="left")
-        tk.Button(nav, text="Next ⟶", command=lambda: load_idx(idx+1)).pack(side="left", padx=6)
+        tk.Button(nav, text="⟵ Prev", command=lambda: load_idx(idx - 1)).pack(side="left")
+        tk.Button(nav, text="Next ⟶", command=lambda: load_idx(idx + 1)).pack(side="left", padx=6)
         tk.Label(nav, textvariable=idx_var).pack(side="left", padx=10)
         tk.Label(nav, text="(Finish: Ctrl+Enter — Undo vertex: Ctrl+Backspace)", fg="#666").pack(side="left", padx=10)
 
-        holder = tk.Frame(top); holder.pack(fill="both", expand=True)
-        editor = AOIEditor(holder, on_change=on_change); editor.pack(fill="both", expand=True)
+        holder = tk.Frame(top)
+        holder.pack(fill="both", expand=True)
+        editor = AOIEditor(holder, on_change=on_change)
+        editor.pack(fill="both", expand=True)
 
         def load_idx(i):
             nonlocal idx
             # Only save if we have an actual image to avoid wiping AOIs with an empty list
             if editor.img_path:
                 save_current()
-            i = max(0, min(i, len(imgs)-1)); idx = i
+            i = max(0, min(i, len(imgs) - 1))
+            idx = i
             p = imgs[i]
             editor.load_image(str(p))
             aois = self.aoi_map.get(str(p), None)
             editor.set_aois(aois if aois is not None else [])
-            idx_var.set(f"{i+1}/{len(imgs)}")
+            idx_var.set(f"{i + 1}/{len(imgs)}")
             # Force first render in case the window hasn't fully laid out yet
             try:
                 top.update_idletasks()
@@ -335,19 +364,19 @@ class App(tk.Tk):
             except Exception as e:
                 self._log(f"[AOI] Close/export error: {e}")
             finally:
-                try: top.destroy()
-                except Exception: pass
+                try:
+                    top.destroy()
+                except Exception:
+                    pass
 
         top.protocol("WM_DELETE_WINDOW", on_close)
-
-        # Load the very first image and force a render so the editor never opens blank
-        load_idx(0)
-
+        load_idx(0)  # load first image immediately
 
     def import_aois_from_input(self):
         imgs = self._resolve_inputs()
         if not imgs:
-            messagebox.showinfo("AOI", "Select input images first."); return
+            messagebox.showinfo("AOI", "Select input images first.")
+            return
         loaded = self._import_aois_from_folder_for_images(imgs, silent=False)
         if loaded > 0:
             self.use_aoi.set(True)
@@ -356,16 +385,19 @@ class App(tk.Tk):
     def export_aois_now(self):
         imgs = self._resolve_inputs()
         if not imgs:
-            messagebox.showinfo("AOI", "Select input images first."); return
+            messagebox.showinfo("AOI", "Select input images first.")
+            return
         count = self._export_aois_to_input(imgs, force=True)
         messagebox.showinfo("AOI", f"Exported AOIs for {count} images.")
 
     def _import_aois_from_folder_for_images(self, imgs, silent: bool):
-        if not imgs: return 0
+        if not imgs:
+            return 0
         root = imgs[0].parent if self.selected_files else Path(self.input_dir.get().strip())
         folder = root / "aoi"
         if not folder.exists():
-            if not silent: self._log(f"[AOI] No 'aoi' folder under {root}")
+            if not silent:
+                self._log(f"[AOI] No 'aoi' folder under {root}")
             return 0
         by_name = {p.name: p for p in imgs}
         loaded = 0
@@ -379,13 +411,13 @@ class App(tk.Tk):
                     for a in raw:
                         pts = a.get("polygon", a.get("points", a.get("pts", [])))
                         if pts and len(pts) >= 3:
-                            aois.append({"name": a.get("name","AOI"),
-                                         "polygon": [[float(x),float(y)] for x,y in pts]})
+                            aois.append({"name": a.get("name", "AOI"),
+                                         "polygon": [[float(x), float(y)] for x, y in pts]})
                 else:
                     legacy_pts = data.get("points", None)
                     if legacy_pts and len(legacy_pts) >= 3:
                         aois = [{"name": "AOI 1",
-                                 "polygon": [[float(x),float(y)] for x,y in legacy_pts]}]
+                                 "polygon": [[float(x), float(y)] for x, y in legacy_pts]}]
                 if img_name in by_name and aois:
                     self.aoi_map[str(by_name[img_name])] = aois
                     loaded += 1
@@ -396,32 +428,36 @@ class App(tk.Tk):
         return loaded
 
     def _export_aois_to_input(self, imgs, force=False):
-        if not imgs: return 0
-        if not (force or (self.use_aoi.get() and self.aoi_map)): return 0
+        if not imgs:
+            return 0
+        if not (force or (self.use_aoi.get() and self.aoi_map)):
+            return 0
         root = imgs[0].parent if self.selected_files else Path(self.input_dir.get().strip())
         (root / "aoi").mkdir(parents=True, exist_ok=True)
-        if cv2 is not None: (root / "aoi_masks").mkdir(parents=True, exist_ok=True)
+        if cv2 is not None:
+            (root / "aoi_masks").mkdir(parents=True, exist_ok=True)
 
         saved = 0
         for p in imgs:
             aois = self.aoi_map.get(str(p), [])
-            if not aois: continue
+            if not aois:
+                continue
             out = {
                 "image": p.name,
-                "aois": [{"name": a.get("name","AOI"),
+                "aois": [{"name": a.get("name", "AOI"),
                           "polygon": [list(pt) for pt in a.get("polygon", a.get("pts", []))],
                           "points":  [list(pt) for pt in a.get("polygon", a.get("pts", []))]}  # legacy mirror
                          for a in aois]
             }
-            with open(root/"aoi"/f"{p.stem}.json","w",encoding="utf-8") as f:
+            with open(root / "aoi" / f"{p.stem}.json", "w", encoding="utf-8") as f:
                 json.dump(out, f, ensure_ascii=False, indent=2)
             if cv2 is not None:
                 im = cv2.imread(str(p))
                 if im is not None:
-                    h,w = im.shape[:2]
+                    h, w = im.shape[:2]
                     m = build_union_mask(h, w, aois)
                     if m is not None:
-                        cv2.imwrite(str(root/"aoi_masks"/f"{p.stem}.png"), m)
+                        cv2.imwrite(str(root / "aoi_masks" / f"{p.stem}.png"), m)
             saved += 1
         self._log(f"[AOI] Persisted to INPUT/aoi & aoi_masks ({saved} images)")
         return saved
@@ -454,8 +490,10 @@ class App(tk.Tk):
         container = self.classes_container
         prev = set(cid for (_nm, var, cid) in self.class_vars if var.get())
         for w in container.winfo_children():
-            try: w.destroy()
-            except: pass
+            try:
+                w.destroy()
+            except Exception:
+                pass
         self.class_vars.clear()
         if isinstance(id2name, dict):
             pairs = [(cid, nm) for cid, nm in sorted(id2name.items(), key=lambda kv: kv[0])]
@@ -478,15 +516,17 @@ class App(tk.Tk):
             cell.grid(row=r, column=c, sticky="nw", padx=6, pady=3)
             cell.grid_propagate(False)
             tk.Checkbutton(cell, text=f"[{cid}] {nm}", variable=var, anchor="w",
-                           justify="left", wraplength=col_w-12).pack(fill="x", expand=True, anchor="w")
+                           justify="left", wraplength=col_w - 12).pack(fill="x", expand=True, anchor="w")
             self.class_vars.append((nm, var, cid))
 
     def _on_classes_canvas_config(self, width: int):
         try:
             avail = max(320, int(width))
         except Exception:
-            try: avail = max(320, int(self.classes_scroll.canvas.winfo_width()))
-            except Exception: avail = 800
+            try:
+                avail = max(320, int(self.classes_scroll.canvas.winfo_width()))
+            except Exception:
+                avail = 800
         new_cols = int(round(avail / float(self.CLASS_CELL_PX)))
         new_cols = max(self.CLASS_COL_MIN, min(self.CLASS_COL_MAX, new_cols))
         if new_cols != self._class_cols and self.class_names:
@@ -542,29 +582,58 @@ class App(tk.Tk):
             self.progress_var.set(cur + step)
             self._smooth_job = self.after(50, self._smooth_tick)
 
+    # ---------- abort watchdog ----------
+    def _cancel_abort_watchdog(self):
+        """## Stop a pending abort-watchdog timer if any."""
+        try:
+            if self._abort_watchdog_job is not None:
+                self.after_cancel(self._abort_watchdog_job)
+                self._abort_watchdog_job = None
+        except Exception:
+            self._abort_watchdog_job = None
+
+    def _abort_watchdog(self):
+        """## Poll until worker stops; then finalize label if still 'Aborting…'."""
+        try:
+            alive = (self._worker is not None and self._worker.is_alive())
+        except Exception:
+            alive = False
+        if alive and self._stop:
+            self._abort_watchdog_job = self.after(120, self._abort_watchdog)
+            return
+        self._abort_watchdog_job = None
+        try:
+            if str(self.progress_label.get()) in ("Aborting…", "Aborting..."):
+                self.progress_label.set("Aborted.")
+        except Exception:
+            pass
+
     # ---------- threaded run ----------
     def start(self):
         imgs = self._resolve_inputs()
         if not imgs:
-            messagebox.showerror("Input", "Select a valid image folder or files."); return
+            messagebox.showerror("Input", "Select a valid image folder or files.")
+            return
         model = self.weights_path.get().strip()
         if not model:
-            messagebox.showerror("Model", "Select a valid weights file (.pt or .onnx)."); return
+            messagebox.showerror("Model", "Select a valid weights file (.pt or .onnx).")
+            return
 
         imported = self._import_aois_from_folder_for_images(imgs, silent=True)
         if imported:
             self._log(f"[AOI] Reused existing AOIs for {imported} images.")
-        # NOTE: Do NOT auto-enable AOI here. Respect the toggle fully.
+        ## Respect the 'Use AOI' toggle fully — do NOT auto-enable here.
 
         if self.class_names and not self._selected_classes():
-            messagebox.showwarning("Classes", "Select at least one class."); return
+            messagebox.showwarning("Classes", "Select at least one class.")
+            return
 
         if self.use_aoi.get() and self.require_aoi_all.get():
             missing = [p for p in imgs if str(p) not in self.aoi_map or not self.aoi_map[str(p)]]
             if missing:
-                messagebox.showwarning("AOI", f"AOI missing for {len(missing)} images."); return
+                messagebox.showwarning("AOI", f"AOI missing for {len(missing)} images.")
+                return
 
-        # outdir: prefer user field; otherwise fall back to ./output (not ./results)
         outdir = Path(self.output_dir.get().strip()) if self.output_dir.get().strip() else (
             Path(__file__).parent.resolve() / "output"
         )
@@ -577,20 +646,25 @@ class App(tk.Tk):
         if self.advanced_override and self.advanced_params:
             base.update(self.advanced_params)
 
+        ## Persist AOIs if available (for mask visualization in INPUT)
         self._export_aois_to_input(imgs, force=False)
 
         use_legacy_pt = (self.engine_var.get() in ("auto", "pt") and model.lower().endswith(".pt"))
 
+        ## UI: enable/disable controls and reset state
         self.btn_start.config(state="disabled")
         self.btn_abort.config(state="normal")
+        self._cancel_abort_watchdog()
         self._stop = False
+        self._worker = None
         self.progress_var.set(0.0)
+        self.progress_label.set("Starting…")
         self.update_idletasks()
 
         def work():
             try:
                 if use_legacy_pt:
-                    ## --- SINGLE RUN, tolerant to both return shapes ---
+                    ## --- Legacy .pt path
                     result = run_legacy_pt(
                         imgs=imgs, outdir=outdir, model_path=model,
                         tile=int(base["tile"]), overlap=float(base["overlap"]),
@@ -602,37 +676,39 @@ class App(tk.Tk):
                         aoi_mode=("off" if not self.use_aoi.get() else self.aoi_mode.get()),
                         aoi_box_frac=float(self.aoi_box_frac.get()),
                         aoi_map=(self.aoi_map if self.use_aoi.get() else {}),
-                        ## Ignore progress updates once abort flag is set
+                        ## Ignore progress updates once abort is requested
                         progress_cb=lambda pct, txt: self._tsafe(
-                            lambda: (None if self._stop else self._smooth_to(pct),
-                                     None if self._stop else self.progress_label.set(txt))
+                            lambda: None if self._stop else (self._smooth_to(pct), self.progress_label.set(txt))
                         ),
                         stop_cb=lambda: self._stop,
                         class_id_to_name=(self.class_names or None),
                         logger=self._log,
-                        return_dets=True,   # request (totals, dets_map)
+                        return_dets=True,
                     )
 
                     dets_map = {}
                     totals = {}
                     if isinstance(result, tuple) and len(result) == 2:
                         totals, dets_map = result
-                    else:
-                        totals = result if isinstance(result, dict) else {}
+                    elif isinstance(result, dict):
+                        totals = result
 
                     self._maybe_export_geojson(imgs, outdir, dets_map)
 
                 else:
+                    ## --- Engine-core path (ONNX / general)
                     totals = self._run_engine_core(imgs, outdir, model, base, qname)
 
                 self._tsafe(lambda: self.progress_label.set(f"Done. Output: {outdir}"))
-                self._tsafe(lambda: self._log(f"Done. Totals: {totals}"))
+                self._tsafe(lambda: self._log(f"Done."))
                 self._tsafe(lambda: messagebox.showinfo("Done", f"Processed {len(imgs)} images.\nSaved to: {outdir}"))
+
             except Exception as e:
                 err = str(e)
                 tb = traceback.format_exc()
+
                 def report():
-                    ## Treat abort as clean cancel, not an error popup
+                    ## Treat abort as a clean cancel (no scary popup)
                     if isinstance(e, KeyboardInterrupt) or "ABORT" in err.upper():
                         self.progress_label.set("Aborted.")
                         self._log("Aborted by user.")
@@ -640,14 +716,36 @@ class App(tk.Tk):
                     messagebox.showerror("Error", err)
                     self._log(f"[ERROR] {err}")
                     self._log(tb)
+
                 self._tsafe(report)
+
             finally:
-                self._tsafe(lambda: (self.btn_start.config(state="normal"), self.btn_abort.config(state="disabled")))
+                def _cleanup_ui():
+                    self.btn_start.config(state="normal")
+                    self.btn_abort.config(state="disabled")
+                    try:
+                        self.progress_var.set(0.0)
+                    except Exception:
+                        pass
+                    ## If we were aborting OR label still says Aborting…, normalize it.
+                    try:
+                        if self._stop or str(self.progress_label.get()) in ("Aborting…", "Aborting..."):
+                            self.progress_label.set("Aborted.")
+                    except Exception:
+                        pass
+                    ## Stop watchdog if any
+                    self._cancel_abort_watchdog()
+
+                self._tsafe(_cleanup_ui)
+
+        ## Launch worker thread
         self._worker = threading.Thread(target=work, daemon=True)
         self._worker.start()
 
     def abort(self):
-        ## Hard abort: set flag, cancel smoother, freeze UI immediately
+        """
+        ## Hard abort: set flag, cancel smoother, show 'Aborting…', and start the watchdog
+        """
         self._stop = True
         try:
             if self._smooth_job is not None:
@@ -655,17 +753,25 @@ class App(tk.Tk):
                 self._smooth_job = None
         except Exception:
             pass
-        try:
-            self.progress_label.set("Aborting…")
-        except Exception:
-            pass
+        self.progress_label.set("Aborting…")
         self._log("=== ABORT requested ===")
+        ## start only one watchdog timer
+        self._cancel_abort_watchdog()
+        try:
+            self._abort_watchdog_job = self.after(120, self._abort_watchdog)
+        except Exception:
+            self._abort_watchdog_job = None
 
     def _tsafe(self, fn):
-        try: self.after(0, fn)
-        except Exception: pass
+        try:
+            self.after(0, fn)
+        except Exception:
+            pass
 
     # ---------- class toggles ----------
+    def _selected_classes(self):
+        return [cid for (_nm, v, cid) in self.class_vars if v.get()]
+
     def select_all_classes(self, state: bool = True):
         for (_nm, var, _cid) in self.class_vars:
             try:
@@ -704,7 +810,8 @@ class App(tk.Tk):
             if self._stop:
                 return
             frac = i / max(1, n)
-            m = int(eta_sec // 60); s = int(eta_sec % 60)
+            m = int(eta_sec // 60)
+            s = int(eta_sec % 60)
             self._smooth_to(frac * 100.0)
             self.progress_label.set(f"Image {i}/{n} — ETA {m:02d}:{s:02d}")
 
@@ -734,9 +841,11 @@ class App(tk.Tk):
     # ---------- Geo export helper ----------
     def _maybe_export_geojson(self, imgs, outdir: Path, dets_map):
         if export_geojson_for_image is None:
-            self._log("[GEO] geo_export.py not found — skipping Geo export."); return
+            self._log("[GEO] geo_export.py not found — skipping Geo export.")
+            return
         if not dets_map:
-            self._log("[GEO] No detection details provided by engine — skipping Geo export."); return
+            self._log("[GEO] No detection details provided by engine — skipping Geo export.")
+            return
 
         gis_dir = outdir / "gis"
         try:
@@ -747,10 +856,10 @@ class App(tk.Tk):
         for p in imgs:
             try:
                 dets = self._normalize_dets(dets_map.get(str(p)) or dets_map.get(p) or [])
-                # pass AOI list as-is; exporter can write AOIs too if desired
                 aois = self.aoi_map.get(str(p), [])
                 geo = export_geojson_for_image(p, dets, aois, out_dir=gis_dir, crs_hint=None)
-                if geo: self._log(f"[GEO] Wrote {geo.name}")
+                if geo:
+                    self._log(f"[GEO] Wrote {geo.name}")
             except Exception as e:
                 self._log(f"[GEO] export failed for {Path(p).name}: {e}")
 
@@ -762,17 +871,15 @@ class App(tk.Tk):
                 cls = d.get("cls") or d.get("class") or d.get("label")
                 conf = float(d.get("conf", d.get("confidence", 0.0)))
                 bbox = d.get("bbox") or d.get("box") or d.get("xyxy")
-                if not bbox or len(bbox) != 4: 
+                if not bbox or len(bbox) != 4:
                     continue
-                x1,y1,x2,y2 = [float(v) for v in bbox]
-                cx, cy = d.get("centroid", ((x1+x2)/2.0, (y1+y2)/2.0))
-                norm.append({"cls": cls, "conf": conf, "bbox": [x1,y1,x2,y2], "centroid": [float(cx),float(cy)]})
+                x1, y1, x2, y2 = [float(v) for v in bbox]
+                cx, cy = d.get("centroid", ((x1 + x2) / 2.0, (y1 + y2) / 2.0))
+                norm.append({"cls": cls, "conf": conf, "bbox": [x1, y1, x2, y2], "centroid": [float(cx), float(cy)]})
             except Exception:
                 continue
         return norm
 
-    def _selected_classes(self):
-        return [cid for (_nm, v, cid) in self.class_vars if v.get()]
 
 if __name__ == "__main__":
     App().mainloop()
