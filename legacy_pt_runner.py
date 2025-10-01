@@ -335,26 +335,38 @@ def run_legacy_pt(
         vis = img.copy()
 
         if overlay_mode and overlay_mode != "off":
-            # AOI outlines (if any)
+        # AOI outlines (if any) — drawn in all visual modes
             if aois:
                 for nm, poly in aois:
                     if poly and len(poly) >= 3:
                         pts = np.asarray(poly, dtype=np.int32)
-                        pts[:,0] = np.clip(pts[:,0], 0, W-1)
-                        pts[:,1] = np.clip(pts[:,1], 0, H-1)
-                        cv2.polylines(vis, [pts], isClosed=True, color=(255,200,0), thickness=2)
+                        pts[:, 0] = np.clip(pts[:, 0], 0, W - 1)
+                        pts[:, 1] = np.clip(pts[:, 1], 0, H - 1)
+                        cv2.polylines(vis, [pts], isClosed=True, color=(255, 200, 0), thickness=2)
 
-            # Detection rectangles / confidences
-            for (x1, y1, x2, y2), s, cid, _aoi_nm in sel:
-                color = (0,255,0)
-                cv2.rectangle(vis, (int(x1), int(y1)), (int(x2), int(y2)), color, 2)
-                if draw_centroid:
+            # --- visualization modes ---
+            mode_viz = (overlay_mode or "").strip().lower()
+
+            if mode_viz in ("boxes", "boxes_conf"):
+                # draw rectangles; optional centroid dot if user checked the box
+                for (x1, y1, x2, y2), s, cid, _aoi_nm in sel:
+                    color = (0, 255, 0)
+                    cv2.rectangle(vis, (int(x1), int(y1)), (int(x2), int(y2)), color, 2)
+                    if draw_centroid:
+                        cx, cy = bbox_center((x1, y1, x2, y2))
+                        cv2.circle(vis, (int(cx), int(cy)), 3, (255, 255, 255), -1)
+                    if mode_viz == "boxes_conf":
+                        label = f"{id2name.get(cid, cid)} {s:.2f}"
+                        cv2.putText(
+                            vis, label, (int(x1), max(0, int(y1) - 3)),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1, cv2.LINE_AA
+                        )
+
+            elif mode_viz in ("centroid", "centroids", "dots"):
+                # centroid-only: NO rectangles, just a dot per detection (ignore checkbox)
+                for (x1, y1, x2, y2), _s, _cid, _aoi_nm in sel:
                     cx, cy = bbox_center((x1, y1, x2, y2))
-                    cv2.circle(vis, (int(cx), int(cy)), 3, (255,255,255), -1)
-                if overlay_mode == "boxes_conf":
-                    label = f"{id2name.get(cid, cid)} {s:.2f}"
-                    cv2.putText(vis, label, (int(x1), max(0, int(y1)-3)),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1, cv2.LINE_AA)
+                    cv2.circle(vis, (int(cx), int(cy)), 3, (255, 255, 255), -1)
 
         # ---- bottom-right summary (AOI-aware) ----
         total_count = len(sel)
