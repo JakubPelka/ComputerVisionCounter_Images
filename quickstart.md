@@ -105,7 +105,6 @@ All in `./output/` (non‑destructive filenames):
 
 * **ONNX runtime support** (first official release).
 * **Segmentation models** support.
-* **Classification models** support.
 * Further improvements to AOI handling and overlay summaries.
 
 ---
