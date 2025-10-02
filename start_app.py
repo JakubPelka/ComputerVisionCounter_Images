@@ -15,7 +15,7 @@ def _add_local_pkgs():
             sys.path.insert(0, str(p))
 _add_local_pkgs()
 
-## Optional OpenCV (used for AOI mask export)
+## Optional OpenCV (used for AOI mask export and AOI backfill)
 try:
     import cv2
 except Exception:
@@ -146,7 +146,7 @@ class App(tk.Tk):
         self.aoi_map: dict[str, list[dict]] = {}
 
         # viz state
-        self.overlay_mode = tk.StringVar(value="boxes_conf")
+        self.overlay_mode = tk.StringVar(value="boxes_conf")  # boxes | boxes_conf | centroid | off
         self.annotate = tk.BooleanVar(value=True)
         self.draw_centroid = tk.BooleanVar(value=False)
 
@@ -249,7 +249,7 @@ class App(tk.Tk):
         else:
             start_dir = Path(__file__).parent / "weights"
         pth = filedialog.askopenfilename(
-            title="Select weights (.pt or .onnx)",
+            title="Select weights (.pt)",
             initialdir=str(start_dir.resolve()),
             filetypes=[("Models", "*.pt"), ("All files", "*.*")]
         )
@@ -616,7 +616,7 @@ class App(tk.Tk):
             return
         model = self.weights_path.get().strip()
         if not model:
-            messagebox.showerror("Model", "Select a valid weights file (.pt or .onnx).")
+            messagebox.showerror("Model", "Select a valid weights file (.pt).")
             return
 
         imported = self._import_aois_from_folder_for_images(imgs, silent=True)
@@ -696,7 +696,7 @@ class App(tk.Tk):
                     self._maybe_export_geojson(imgs, outdir, dets_map)
 
                 else:
-                    ## --- Engine-core path (ONNX / general)
+                    ## --- Engine-core path (placeholder if you re-enable ONNX in future)
                     totals = self._run_engine_core(imgs, outdir, model, base, qname)
 
                 self._tsafe(lambda: self.progress_label.set(f"Done. Output: {outdir}"))
@@ -786,13 +786,13 @@ class App(tk.Tk):
             except Exception:
                 pass
 
-    # ---------- engine-core path ----------
+    # ---------- engine-core path (kept for future ONNX re-enable) ----------
     def _run_engine_core(self, imgs, outdir: Path, model, base, qname: str):
         cfg = InferConfig(
             model_path=model, engine=self.engine_var.get(), device=self.device_var.get(),
             conf=float(base["conf"]), iou=float(base["iou_nms"]), imgsz=int(base["tile"]),
             classes=self._selected_classes(),
-            aoi_mode=("off" if not self.use_aoi.get() else self.aoi_mode.get()),  ## mirror AOI OFF here too
+            aoi_mode=("off" if not self.use_aoi.get() else self.aoi_mode.get()),
             aoi_box_frac=float(self.aoi_box_frac.get()),
             annotate=bool(self.annotate.get()), draw_centroid=bool(self.draw_centroid.get()),
             use_tiling=True, tile=int(base["tile"]), overlap=float(base["overlap"]),
@@ -855,8 +855,13 @@ class App(tk.Tk):
 
         for p in imgs:
             try:
-                dets = self._normalize_dets(dets_map.get(str(p)) or dets_map.get(p) or [])
+                # Normalize detections and KEEP AOI fields if present
+                raw = dets_map.get(str(p)) or dets_map.get(p) or []
+                dets = self._normalize_dets(raw)
                 aois = self.aoi_map.get(str(p), [])
+                # Backfill AOI names by centroid if missing (safety net)
+                if self.use_aoi.get():
+                    self._fill_missing_aoi(dets, aois, self.aoi_mode.get())
                 geo = export_geojson_for_image(p, dets, aois, out_dir=gis_dir, crs_hint=None)
                 if geo:
                     self._log(f"[GEO] Wrote {geo.name}")
@@ -865,6 +870,10 @@ class App(tk.Tk):
 
     @staticmethod
     def _normalize_dets(raw_list):
+        """
+        ## Normalize detections for GIS/export paths.
+        Keeps cls, conf, bbox, centroid, and crucially the AOI name if present.
+        """
         norm = []
         for d in (raw_list or []):
             try:
@@ -875,10 +884,60 @@ class App(tk.Tk):
                     continue
                 x1, y1, x2, y2 = [float(v) for v in bbox]
                 cx, cy = d.get("centroid", ((x1 + x2) / 2.0, (y1 + y2) / 2.0))
-                norm.append({"cls": cls, "conf": conf, "bbox": [x1, y1, x2, y2], "centroid": [float(cx), float(cy)]})
+                aoi = (d.get("aoi") or d.get("aoi_name") or "").strip()
+                norm.append({
+                    "cls": cls,
+                    "conf": conf,
+                    "bbox": [x1, y1, x2, y2],
+                    "centroid": [float(cx), float(cy)],
+                    "aoi": aoi,          ## <- keep AOI
+                    "aoi_name": aoi,     ## <- alias for downstream tools
+                })
             except Exception:
                 continue
         return norm
+
+    def _fill_missing_aoi(self, dets: list, aois: list, mode: str):
+        """
+        ## If AOI names are missing but AOIs exist, assign them by centroid.
+        This is a safety net for exporters that expect 'aoi' or 'aoi_name'.
+        """
+        if not dets or not aois:
+            return
+        if cv2 is None:
+            return  # can't do geometric test without OpenCV
+
+        try:
+            import numpy as _np
+        except Exception:
+            return
+
+        # Normalize AOIs → [(name, np.ndarray Nx2)]
+        pairs = []
+        for a in aois:
+            nm = a.get("name", "AOI")
+            poly = a.get("polygon") or a.get("points") or a.get("pts") or []
+            if len(poly) >= 3:
+                pts = _np.asarray(poly, dtype=_np.float32)
+                pairs.append((nm, pts))
+
+        if not pairs:
+            return
+
+        for d in dets:
+            if (d.get("aoi") or d.get("aoi_name")):
+                continue  # already set
+            cx, cy = d.get("centroid", [None, None])
+            if cx is None or cy is None:
+                continue
+            for nm, pts in pairs:
+                try:
+                    if cv2.pointPolygonTest(pts, (float(cx), float(cy)), False) >= 0:
+                        d["aoi"] = nm
+                        d["aoi_name"] = nm
+                        break
+                except Exception:
+                    continue
 
 
 if __name__ == "__main__":

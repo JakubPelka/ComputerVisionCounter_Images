@@ -431,10 +431,15 @@ def run_legacy_pt(
                 "cls": id2name.get(cid, str(cid)),
                 "conf": float(s),
                 "bbox": [float(x1), float(y1), float(x2), float(y2)],
-                "centroid": [float(bbox_center((x1,y1,x2,y2))[0]), float(bbox_center((x1,y1,x2,y2))[1])],
+                "centroid": [
+                    float(bbox_center((x1, y1, x2, y2))[0]),
+                    float(bbox_center((x1, y1, x2, y2))[1]),
+                ],
+                # Keep both keys for maximum compatibility with any downstream exporter
                 "aoi": (aoi_nm or ""),
+                "aoi_name": (aoi_nm or ""),
             }
-            for (x1,y1,x2,y2), s, cid, aoi_nm in sel
+            for (x1, y1, x2, y2), s, cid, aoi_nm in sel
         ]
 
         _abort_if_needed(stop_cb)  ## abort before end-of-image progress
