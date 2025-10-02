@@ -32,6 +32,20 @@ Choose **Input** and **Model** via the GUI (not prefilled). Default output is `.
 2. **Browse… (Model)** → choose a YOLO **`.pt`** file. Class names auto‑load.
 3. **Select classes** (at least one).
 
+**Get a test model (YOLO11n)**
+We do **not** bundle third‑party weights. To try the app quickly, fetch a small official model from Ultralytics:
+
+* Ultralytics Detect task: [https://docs.ultralytics.com/tasks/detect/](https://docs.ultralytics.com/tasks/detect/)
+* YOLO11 models overview: [https://docs.ultralytics.com/models/yolo11/](https://docs.ultralytics.com/models/yolo11/)
+
+> Tip: choose **YOLO11n** (nano) for the fastest test.
+
+**More model sources**
+
+* **Ultralytics Docs** (links above) — official `.pt` weights.
+* **Ultralytics on Hugging Face** — search for `yolo11n.pt` and related variants.
+* **Model zoos** (varied licenses): Roboflow Universe, Hugging Face Hub. Always verify the license of any third‑party model before use.
+
 ---
 
 ## 4) (Optional) Draw AOIs
@@ -75,7 +89,7 @@ All in `./output/` (non‑destructive filenames):
   * **Without AOIs** → `Total … (per‑class breakdown)`
 * `results_per_image.csv` & `results_totals.json`
 * `detections_full.csv` (kept detections; includes AOI name when AOI is ON)
-* `gis/<image>__detections_p.csv` and `gis/<image>__detections_b.csv` for georeferenced images
+* `gis/<image>__detections_point.csv` and `gis/<image>__detections_box.csv` for georeferenced images
 
 ---
 
@@ -93,3 +107,9 @@ All in `./output/` (non‑destructive filenames):
 * **Segmentation models** support.
 * **Classification models** support.
 * Further improvements to AOI handling and overlay summaries.
+
+---
+
+### Licensing note
+
+We don’t include third‑party model weights in the app package. Ultralytics YOLO models are provided under **AGPL‑3.0** (or a commercial **Enterprise License**). Review the model’s license before **redistributing** any weights or using them in commercial settings.
