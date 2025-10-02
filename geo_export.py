@@ -125,10 +125,10 @@ def export_geojson_for_image(  # noqa: API kept for start_app; now writes CSVs o
 ) -> Optional[Path]:
     """
     CSV-only export:
-      - <stem>__detections_p.csv  (image, cls, conf, x, y)
-      - <stem>__detections_b.csv  (image, cls, conf, wkt)
-      - <stem>__aois.csv          (image, name, wkt)
-    Returns the path to the *points* CSV if written, else the boxes CSV, else None.
+      - <stem>__detections_point.csv  (image, cls, conf, x, y, aoi)
+      - <stem>__detections_box.csv    (image, cls, conf, aoi, wkt)
+      - <stem>__aois.csv              (image, name, wkt)
+    Returns the path to the *point* CSV if written, else the box CSV, else None.
     """
     image_path = Path(image_path)
     out_dir = Path(out_dir); out_dir.mkdir(parents=True, exist_ok=True)
@@ -138,8 +138,11 @@ def export_geojson_for_image(  # noqa: API kept for start_app; now writes CSVs o
         # no georef -> nothing to write
         return None
 
-    points_rows = []  # dicts with image,cls,conf,x,y
-    boxes_rows  = []  # dicts with image,cls,conf,wkt
+    # row dicts:
+    #  * points_rows: {"image","cls","conf","x","y","aoi"}
+    #  * boxes_rows:  {"image","cls","conf","aoi","wkt"}
+    points_rows = []
+    boxes_rows  = []
 
     # ---- detections -> world coords ----
     for det in (detections or []):
@@ -151,19 +154,35 @@ def export_geojson_for_image(  # noqa: API kept for start_app; now writes CSVs o
         x1,y1,x2,y2 = [float(v) for v in bbox]
         cx, cy = det.get("centroid", ((x1+x2)/2.0, (y1+y2)/2.0))
 
-        # centroid
+        # AOI name propagated from runner/normalizer. Allow both keys.
+        aoi_name = (det.get("aoi") or det.get("aoi_name") or "")
+
+        # centroid -> point CSV
         gx, gy = pix2geo(aff, float(cx), float(cy))
         if _finite_xy(gx, gy):
-            points_rows.append({"image": image_path.name, "cls": cls, "conf": conf, "x": gx, "y": gy})
+            points_rows.append({
+                "image": image_path.name,
+                "cls": cls,
+                "conf": conf,
+                "x": gx,
+                "y": gy,
+                "aoi": aoi_name,
+            })
 
-        # bbox polygon -> WKT
+        # bbox polygon -> WKT (box CSV)
         p1 = pix2geo(aff, x1, y1)
         p2 = pix2geo(aff, x2, y1)
         p3 = pix2geo(aff, x2, y2)
         p4 = pix2geo(aff, x1, y2)
         poly = [p1, p2, p3, p4]
         if all(_finite_xy(px,py) for (px,py) in poly):
-            boxes_rows.append({"image": image_path.name, "cls": cls, "conf": conf, "wkt": _poly_wkt(poly)})
+            boxes_rows.append({
+                "image": image_path.name,
+                "cls": cls,
+                "conf": conf,
+                "aoi": aoi_name,
+                "wkt": _poly_wkt(poly),
+            })
 
     # ---- AOIs -> WKT CSV ----
     if aois:
@@ -181,14 +200,14 @@ def export_geojson_for_image(  # noqa: API kept for start_app; now writes CSVs o
                 for r in aoi_rows:
                     f.write(",".join([_csv_escape(r["image"]), _csv_escape(r["name"]), _csv_escape(r["wkt"])]) + "\n")
 
-    points_path = None
-    boxes_path = None
+    point_path = None
+    box_path = None
 
     # ---- write detections CSVs (unique names) ----
     if points_rows:
-        points_path = _unique_path(out_dir / f"{image_path.stem}__detections_p.csv")
-        with points_path.open("w", encoding="utf-8") as f:
-            f.write("image,cls,conf,x,y\n")
+        point_path = _unique_path(out_dir / f"{image_path.stem}__detections_point.csv")
+        with point_path.open("w", encoding="utf-8") as f:
+            f.write("image,cls,conf,x,y,aoi\n")
             for r in points_rows:
                 f.write(",".join([
                     _csv_escape(r["image"]),
@@ -196,18 +215,20 @@ def export_geojson_for_image(  # noqa: API kept for start_app; now writes CSVs o
                     f"{float(r['conf']):.6f}",
                     f"{float(r['x']):.6f}",
                     f"{float(r['y']):.6f}",
+                    _csv_escape(r.get("aoi","")),
                 ]) + "\n")
 
     if boxes_rows:
-        boxes_path = _unique_path(out_dir / f"{image_path.stem}__detections_b.csv")
-        with boxes_path.open("w", encoding="utf-8") as f:
-            f.write("image,cls,conf,wkt\n")
+        box_path = _unique_path(out_dir / f"{image_path.stem}__detections_box.csv")
+        with box_path.open("w", encoding="utf-8") as f:
+            f.write("image,cls,conf,aoi,wkt\n")
             for r in boxes_rows:
                 f.write(",".join([
                     _csv_escape(r["image"]),
                     _csv_escape("" if r["cls"] is None else str(r["cls"])),
                     f"{float(r['conf']):.6f}",
+                    _csv_escape(r.get("aoi","")),
                     _csv_escape(r["wkt"]),
                 ]) + "\n")
 
-    return points_path or boxes_path
+    return point_path or box_path
