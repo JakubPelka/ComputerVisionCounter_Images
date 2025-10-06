@@ -123,6 +123,10 @@ pkgs/  weights/  input/  output/
 * Atomic file writes (tmp → rename) to avoid partial artifacts on abort.
 * Config file for defaults (YAML), CLI/batch mode.
 * Unit tests for AOI math and GIS exporters.
+* take image / connect camera for analys here & now
+* ios compatibilitet test
+* segmentation model support
+
 
 **Refactors / cleanup**
 
