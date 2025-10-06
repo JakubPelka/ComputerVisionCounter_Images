@@ -20,6 +20,12 @@ try:
     import cv2
 except Exception:
     cv2 = None
+    
+try:
+    from PIL import Image, ImageTk
+except Exception:
+    Image = None
+    ImageTk = None
 
 ## Optional GIS exporter — called only if present
 try:
@@ -174,6 +180,10 @@ class App(tk.Tk):
         # initial output dir only (no input/weights prefill)
         self._prefill_only_output()
 
+        # ---- input source (like video_counter) ----
+        self.src_mode = tk.StringVar(value="files")  # "files" | "camera"
+        self.cam_index = tk.StringVar(value="0")
+
         # build UI
         ui_panels.build_main_ui(self)
 
@@ -204,6 +214,18 @@ class App(tk.Tk):
         imgs = collect_images(Path(d))
         self.progress_label.set(f"{len(imgs)} images ready")
         self._refresh_files_label()
+
+    def _ensure_input_dir(self) -> Path:
+        """
+        ## Ensure base input folder exists and is set in UI.
+        """
+        base = Path(self.input_dir.get().strip()) if self.input_dir.get().strip() else (Path(__file__).parent / "input")
+        base.mkdir(parents=True, exist_ok=True)
+        if not self.input_dir.get().strip():
+            self.input_dir.set(str(base.resolve()))
+        return base
+
+
 
     def browse_files(self):
         start = self.input_dir.get().strip() or str((Path(__file__).parent / "input").resolve())
@@ -483,6 +505,208 @@ class App(tk.Tk):
             return []
         return collect_images(Path(self.input_dir.get().strip()))
 
+
+    def _open_camera_capture(self):
+        """
+        ## Live preview with minimal controls (Open, Capture, Retake, Save & Use, Close).
+        No AOI editing here. 'Save & Use' closes the dialog and appends the image
+        to the current selection for downstream processing (AOI editor, analysis).
+        """
+        if cv2 is None or Image is None or ImageTk is None:
+            messagebox.showerror("Camera", "This feature requires OpenCV and Pillow.")
+            return
+
+        top = tk.Toplevel(self)
+        top.title("Camera Capture")
+        top.geometry("1000x700")
+        top.transient(self)
+        try:
+            top.lift(); top.attributes("-topmost", True); top.after(150, lambda: top.attributes("-topmost", False))
+        except Exception:
+            pass
+
+        # ---- state ----
+        running = {"on": False}          # preview loop running?
+        frozen = {"on": False}           # captured (freeze) flag
+        last_frame = {"img": None}       # numpy BGR frame
+        cap = {"obj": None}              # cv2.VideoCapture
+
+        # ---- toolbar ----
+        bar = tk.Frame(top); bar.pack(fill="x", padx=8, pady=6)
+        tk.Label(bar, text="Camera index:").pack(side="left")
+        idx_var = tk.StringVar(value=self.cam_index.get())
+        tk.Entry(bar, width=5, textvariable=idx_var).pack(side="left", padx=(4,12))
+        mirror_var = tk.BooleanVar(value=True)
+        tk.Checkbutton(bar, text="Mirror preview", variable=mirror_var).pack(side="left")
+
+        btn_open    = tk.Button(bar, text="Open",  width=8)
+        btn_capture = tk.Button(bar, text="Capture", width=10, state="disabled")
+        btn_retake  = tk.Button(bar, text="Retake", width=8, state="disabled")
+        btn_save    = tk.Button(bar, text="Save & Use", width=12, state="disabled")
+        btn_close   = tk.Button(bar, text="Close", width=8)
+
+        btn_close.pack(side="right", padx=4)
+        btn_save.pack(side="right", padx=4)
+        btn_retake.pack(side="right", padx=4)
+        btn_capture.pack(side="right", padx=4)
+        btn_open.pack(side="right", padx=4)
+
+        # ---- preview area ----
+        preview = tk.Label(top, text="Open camera to preview…", anchor="center", bd=1, relief="sunken")
+        preview.pack(fill="both", expand=True, padx=8, pady=8)
+
+        # ---- helpers ----
+        def _close_cap():
+            try:
+                if cap["obj"] is not None:
+                    cap["obj"].release()
+            except Exception:
+                pass
+            cap["obj"] = None
+
+        def _open_cap():
+            _close_cap()
+            try:
+                i = int(idx_var.get().strip())
+            except Exception:
+                messagebox.showerror("Camera", "Camera index must be an integer.")
+                return False
+            c = cv2.VideoCapture(i)
+            if not c or not c.isOpened():
+                messagebox.showerror("Camera", f"Could not open camera index {i}")
+                return False
+            cap["obj"] = c
+            return True
+
+        def _tick():
+            if not running["on"]:
+                return
+            if cap["obj"] is None:
+                preview.after(120, _tick)
+                return
+
+            if frozen["on"]:
+                frm = last_frame["img"]
+                if frm is None:
+                    preview.after(30, _tick)
+                    return
+            else:
+                ok, frm = cap["obj"].read()
+                if not ok or frm is None:
+                    preview.after(30, _tick)
+                    return
+                last_frame["img"] = frm
+
+            img = frm.copy()
+            if mirror_var.get():
+                img = cv2.flip(img, 1)
+            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+
+            # fit-to-label
+            ph = preview.winfo_height() or 600
+            pw = preview.winfo_width() or 900
+            h, w = img.shape[:2]
+            scale = min(pw / max(1, w), ph / max(1, h))
+            nw, nh = max(1, int(w * scale)), max(1, int(h * scale))
+            img_resized = cv2.resize(img, (nw, nh), interpolation=cv2.INTER_AREA)
+
+            tkimg = ImageTk.PhotoImage(Image.fromarray(img_resized))
+            preview.imgtk = tkimg
+            preview.configure(image=tkimg)
+
+            preview.after(30, _tick)
+
+        def _do_open():
+            if _open_cap():
+                running["on"] = True
+                frozen["on"] = False
+                btn_capture.config(state="normal")
+                btn_retake.config(state="disabled")
+                btn_save.config(state="disabled")
+                _tick()
+
+        def _do_capture():
+            if last_frame["img"] is None:
+                return
+            frozen["on"] = True
+            btn_capture.config(state="disabled")
+            btn_retake.config(state="normal")
+            btn_save.config(state="normal")
+
+        def _do_retake():
+            frozen["on"] = False
+            btn_capture.config(state="normal")
+            btn_retake.config(state="disabled")
+            btn_save.config(state="disabled")
+
+        def _save_and_use():
+            # require frozen frame
+            if not frozen["on"] or last_frame["img"] is None:
+                messagebox.showinfo("Camera", "Capture a frame first.")
+                return
+
+            # ensure input/captured exists
+            base_input = Path(self.input_dir.get().strip()) if self.input_dir.get().strip() else (Path(__file__).parent / "input")
+            (base_input / "captured").mkdir(parents=True, exist_ok=True)
+            out_path = base_input / "captured" / f"captured_{time.strftime('%Y%m%d_%H%M%S')}.jpg"
+
+            # save mirrored if preview is mirrored (so user sees the same image later)
+            frm = last_frame["img"]
+            if mirror_var.get():
+                frm = cv2.flip(frm, 1)
+            try:
+                cv2.imwrite(str(out_path), frm)
+            except Exception as e:
+                messagebox.showerror("Save", f"Failed to save image: {e}")
+                return
+
+            # append to selection (do not replace), switch to Files
+            current = list(self.selected_files or [])
+            current.append(out_path)
+            # de-duplicate while keeping order
+            seen = set()
+            dedup = []
+            for p in current:
+                sp = str(Path(p))
+                if sp not in seen:
+                    seen.add(sp)
+                    dedup.append(Path(p))
+            self.selected_files = dedup
+            self.src_mode.set("files")
+            self._ensure_input_dir()  # also sets input_dir if empty
+            self._refresh_files_label()
+            self._log(f"[CAM] Saved → {out_path.name} (added to selection)")
+
+            # close dialog
+            _on_close()
+
+        def _on_close():
+            running["on"] = False
+            _close_cap()
+            try:
+                top.destroy()
+            except Exception:
+                pass
+
+        # wire buttons
+        btn_open.config(command=_do_open)
+        btn_capture.config(command=_do_capture)
+        btn_retake.config(command=_do_retake)
+        btn_save.config(command=_save_and_use)
+        btn_close.config(command=_on_close)
+
+        # auto-open if source mode is 'camera'
+        try:
+            if self.src_mode.get() == "camera":
+                _do_open()
+        except Exception:
+            pass
+
+
+
+
+
+
     # ===== classes grid =====
     def _populate_classes(self, id2name: dict[int, str] | list[str]):
         if not hasattr(self, "classes_container") or self.classes_container is None:
@@ -610,10 +834,53 @@ class App(tk.Tk):
 
     # ---------- threaded run ----------
     def start(self):
-        imgs = self._resolve_inputs()
-        if not imgs:
-            messagebox.showerror("Input", "Select a valid image folder or files.")
-            return
+        ## --- Resolve input source (Files/Folder vs Camera snapshot) ---
+        imgs = None
+        if hasattr(self, "src_mode") and self.src_mode.get() == "camera":
+            # Camera snapshot path: grab one frame and save it to input/
+            if cv2 is None:
+                messagebox.showerror("Camera", "OpenCV is required for camera capture.")
+                return
+            try:
+                cam_idx = int(self.cam_index.get().strip())
+            except Exception:
+                messagebox.showerror("Camera", "Camera index must be an integer.")
+                return
+
+            cap = cv2.VideoCapture(cam_idx)
+            ok, frame = cap.read()
+            cap.release()
+            if not ok or frame is None:
+                messagebox.showerror("Camera", "Could not grab a frame from camera.")
+                return
+
+            # Ensure input/ exists (do not rely on helper to keep this self-contained)
+            base_input = Path(self.input_dir.get().strip()) if self.input_dir.get().strip() else (Path(__file__).parent / "input")
+            try:
+                base_input.mkdir(parents=True, exist_ok=True)
+            except Exception:
+                pass
+
+            fname = time.strftime("captured_%Y%m%d_%H%M%S.jpg")
+            out_img = base_input / fname
+            try:
+                cv2.imwrite(str(out_img), frame)
+            except Exception as e:
+                messagebox.showerror("Camera", f"Failed to save captured image: {e}")
+                return
+
+            # Use the captured image as the only input for this run
+            self.selected_files = [out_img]
+            imgs = [out_img]
+            self._refresh_files_label()
+            self._log(f"[CAM] Captured → {out_img.name}")
+
+        else:
+            imgs = self._resolve_inputs()
+            if not imgs:
+                messagebox.showerror("Input", "Select a valid image folder or files.")
+                return
+
         model = self.weights_path.get().strip()
         if not model:
             messagebox.showerror("Model", "Select a valid weights file (.pt).")
@@ -741,6 +1008,7 @@ class App(tk.Tk):
         ## Launch worker thread
         self._worker = threading.Thread(target=work, daemon=True)
         self._worker.start()
+
 
     def abort(self):
         """
