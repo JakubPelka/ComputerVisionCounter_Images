@@ -48,6 +48,7 @@ This installs dependencies into `./pkgs` (or `./_pkgs`) and starts the app. Inpu
 
 ## 🚀 Workflow
 
+0. **Pick input source** -> select a file or stream from camera (inbuilt / extern).
 1. **Browse… (Input)** → pick a folder or specific files.
 2. **Browse… (Model)** → choose a YOLO `` file. Class list auto‑loads.
 3. **Select classes** → at least one.
@@ -123,7 +124,6 @@ pkgs/  weights/  input/  output/
 * Atomic file writes (tmp → rename) to avoid partial artifacts on abort.
 * Config file for defaults (YAML), CLI/batch mode.
 * Unit tests for AOI math and GIS exporters.
-* take image / connect camera for analys here & now
 * ios compatibilitet test
 * segmentation model support
 
