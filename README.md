@@ -139,3 +139,8 @@ pkgs/  weights/  input/  output/
 * Unify progress reporting (ETA + smoothing) via one helper.
 
 > The goal is to keep `start_app.py` thinner by moving utilities into small modules without changing current behavior.
+
+
+
+## After last release
+* Camera as input directly.
