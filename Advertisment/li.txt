@@ -1,7 +1,0 @@
-I am proud to share my first digital product: ComputerVision Counter (Images).
-This is an after-hours project, not connected to my daily work.
-
-The idea was simple: make computer vision counters accessible for everyone — without coding, without cloud, without complexity.
-
-And this is just the beginning:
-I am already preparing ComputerVision Counter for videos and live streams
