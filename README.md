@@ -1,146 +1,126 @@
-# ComputerVision Counter — Count anything without coding
+# ComputerVision Counter Images
 
-A desktop app for **counting objects in images** with your own YOLO models — **no coding required**. Add images, pick classes, (optionally) draw Areas of Interest (AOIs), and let the app count and annotate. Works offline and installs all Python packages into a **local **``** folder** so it won’t touch your system environment.
+**Status:** ACTIVE / pre-release cleanup  
+**Planned release:** v0.1.0 candidate  
+**License:** MIT  
+**Primary platform:** Windows 10/11  
 
-> **Status (this release):** Supports Ultralytics **YOLO **`` models. **ONNX is disabled** for now and returns in the next release.
+ComputerVision Counter Images is a small desktop application for counting objects in images with your own YOLO models. It is designed for users who want a practical no-code workflow: select images, select a model, choose classes, optionally draw Areas of Interest (AOIs), run detection, and export readable results.
 
----
+The application runs locally. Images, model weights and outputs stay on your machine.
 
-## ✨ Highlights
+## What it does
 
-* **No‑code counting** with your own YOLO `` models.
-* **AOI editor** (multi‑polygon per image, named zones). Draw once, auto‑save per image.
-* **Flexible AOI filtering**: by **centroid** (default) or **box‑overlap** fraction.
-* **AOI toggle respected**: when **Use AOI = OFF**, filtering is disabled and overlays show **only a global total with per‑class breakdown**.
-* **Per‑class filters**: choose which classes to count.
-* **Advanced presets** (Fast/Balanced/Ultra) + expert panel (tiling, NMS/WBF, seam de‑dup, etc.).
-* **Strict confidence**: detections must be **strictly greater than** the chosen `conf` value.
-* **Clean overlays**: boxes/labels or centroids, plus a **bottom‑right summary**:
+- Counts objects in still images using YOLO `.pt` models.
+- Lets the user select which model classes should be counted.
+- Supports optional AOI filtering with named polygon zones.
+- Creates annotated preview images.
+- Exports CSV/JSON result files for further analysis.
+- Provides GIS-friendly exports for georeferenced images when supported by the input data.
+- Uses a local Python package folder so the project does not need to modify the global Python environment.
 
-  * With AOIs → `Total: 45   AOI1: 15 (car 10, bus 5)   AOI2: 30 (car 18, bus 12)`
-  * Without AOIs → `Total: 45 (car 28, bus 17)`
-* **GIS‑friendly CSV export** for georeferenced images (points & boxes) with **non‑destructive filenames** (no overwrites).
-* **Full detections CSV**: run‑level `detections_full.csv` with AOI names.
-* **Immediate abort** with watchdog; label reliably flips to **Aborted.**
+## Current scope
 
----
+The stable path for this release is **Ultralytics YOLO `.pt` models**.
 
-## 🖥️ Requirements
+ONNX support is treated as experimental/known issue and should not be presented as the main supported workflow until it is fixed and tested. Detection models are not included in this repository. Model files can be large and may have separate licenses.
 
-* **Windows 10/11** (primary target). macOS/Linux likely fine but untested.
-* **Python 3.10–3.12** (tested with 3.12).
-* **GPU** optional (CUDA auto‑used if available; CPU otherwise).
+## Requirements
 
-> **Models are not included.** Bring your own YOLO weights (`.pt`).
+- Windows 10/11.
+- Python 3.10-3.12. Python 3.12 has been used during development/testing.
+- A YOLO `.pt` model compatible with Ultralytics.
+- Optional NVIDIA GPU/CUDA for faster inference. CPU can work but may be slower.
 
----
+## Quick start
 
-## 📦 Install (local, isolated)
+Clone or download the repository, place your model in a local `models/` folder, place test images in a local `input/` folder, then start the app.
 
-```bash
+```bat
+start.bat
+```
+
+Alternative manual start:
+
+```bat
 python bootstrap_env.py
 python start_app.py
 ```
 
-This installs dependencies into `./pkgs` (or `./_pkgs`) and starts the app. Input and weights are **not prefilled** — click **Browse…** to choose them. Default output is `./output/`.
+The app creates or uses local working folders such as `input/`, `models/`, `output/` and `_pkgs/`. These folders are intentionally ignored by Git except for small README placeholder files.
 
----
+## Basic workflow
 
-## 🚀 Workflow
+1. Start the application.
+2. Choose an input folder or image files.
+3. Choose a YOLO `.pt` model.
+4. Select the classes you want to count.
+5. Optionally draw AOIs.
+6. Choose a quality/preset setting.
+7. Run the counter.
+8. Review annotated images and exported CSV/JSON files in `output/`.
 
-0. **Pick input source** -> select a file or stream from camera (inbuilt / extern).
-1. **Browse… (Input)** → pick a folder or specific files.
-2. **Browse… (Model)** → choose a YOLO `` file. Class list auto‑loads.
-3. **Select classes** → at least one.
-4. **(Optional) AOIs** → open **AOI Editor**, draw named polygons; saved to `input/aoi/*.json` and `input/aoi_masks/*.png`.
-5. Choose **Fast / Balanced / Ultra** preset (or tweak **Advanced**).
-6. **Start**. Use **Abort** to cancel immediately; label changes from *Aborting…* to *Aborted.* when the worker stops.
+## Repository layout
 
----
+This cleanup keeps the existing working Python files in the repository root for now. That is intentional: the current application works, and moving the code to `src/` should be done as a separate tested refactor.
 
-## 🧭 AOI behavior
-
-* AOIs are persisted per image in `input/aoi/…` and `input/aoi_masks/…`.
-* **Use AOI = ON**: detections must lie **in any AOI** (by centroid or box‑overlap). The overlay shows **Total + per‑AOI counts** (each with per‑class breakdown).
-* **Use AOI = OFF**: AOIs (even if present on disk) are **ignored**; the overlay shows **only Total + global per‑class breakdown**.
-
-**Editor hotkeys**
-
-* Finish polygon: **Ctrl + Enter**
-* Undo vertex: **Ctrl + Backspace**
-
----
-
-## 🧪 Advanced (short)
-
-* **Tiling**: `tile` (px), `overlap` (0–1)
-* **Thresholds**: strict `conf` (kept if `conf_raw > conf`), `iou_nms`
-* **WBF**: `use_wbf`, `wbf_iou` (auto if empty), `wbf_alpha`
-* **Seam de‑dup**: `seam_band_factor`, `seam_weight`
-* **Overlay**: `boxes` / `boxes_conf` / `centroid` and optional centroid dot
-
----
-
-## 🧾 Outputs
-
-All in the chosen **Output** folder (default `./output/`). Files get numeric suffixes to avoid overwrites.
-
-* `annotated/<image>_annotated.jpg` — detections + bottom‑right summary (conditional AOI logic above).
-* `results_per_image.csv` — per‑image class counts.
-* `results_totals.json` — run totals.
-* `detections_full.csv` — kept detections (with AOI name when AOI is ON).
-* `gis/<image>__detections_p.csv` & `gis/<image>__detections_b.csv` — world‑coords for points/boxes (only if the image is georeferenced).
-
----
-
-## 🔧 Troubleshooting
-
-* **No detections** → verify classes, `conf` not too high, and model fits the data.
-* **Overlay vs CSV mismatch** → CSV uses raw floats and strict `>`; overlay is rounded.
-
----
-
-## 📚 Project layout
-
-```
-start_app.py
-legacy_pt_runner.py
-app_core.py
-engine_loader.py
-ui_panels.py, ui_advanced.py, widgets.py
-geo_export.py
-bootstrap_env.py
-pkgs/  weights/  input/  output/
+```text
+ComputerVisionCounter_Images/
+├─ README.md
+├─ LICENSE
+├─ CHANGELOG.md
+├─ ROADMAP.md
+├─ requirements.txt
+├─ .gitignore
+├─ .gitattributes
+├─ start.bat
+├─ bootstrap_env.py
+├─ start_app.py
+├─ app_core.py
+├─ engine_loader.py
+├─ legacy_pt_runner.py
+├─ geo_export.py
+├─ onnx_ultra_patch.py
+├─ ui_advanced.py
+├─ ui_panels.py
+├─ widgets.py
+├─ docs/
+│  ├─ QUICKSTART.md
+│  ├─ PROJECT_STRUCTURE.md
+│  ├─ KNOWN_CHALLENGES.md
+│  └─ RELEASE_NOTES_v0.1.0.md
+├─ presets/
+│  ├─ README.md
+│  └─ cv_counter_preset.json
+├─ input/
+│  └─ README.md
+├─ models/
+│  └─ README.md
+├─ output/
+│  └─ .gitkeep
+├─ sample_data/
+│  └─ README.md
+└─ tools/
+   └─ README.md
 ```
 
----
+## What should not be committed
 
-## 🗺️ Roadmap (next release)
+Do not commit:
 
-**Features**
+- model weights: `.pt`, `.onnx`, `.engine`, `.tflite`, `.pb`, `.h5`;
+- local images or private datasets;
+- output files, annotated images, logs and generated CSV/JSON results;
+- `_pkgs/`, `pkgs/`, virtual environments, cache folders;
+- local experiments, backups, old ZIP packages and temporary folders;
+- secrets, tokens, `.env` files or private paths.
 
-* Bring back **ONNX** runtime support for `.onnx` models.
-* Optional: AOI summary order by **count** (desc) instead of name.
-* Atomic file writes (tmp → rename) to avoid partial artifacts on abort.
-* Config file for defaults (YAML), CLI/batch mode.
-* Unit tests for AOI math and GIS exporters.
-* ios compatibilitet test
-* segmentation model support
+## License
 
+The project code is released under the MIT License.
 
-**Refactors / cleanup**
+The MIT License allows use, modification, redistribution and commercial use of the code, as long as the copyright notice and license text are preserved. Detection models, datasets and third-party libraries may have separate licenses.
 
-* Extract AOI helpers to `aoi_utils.py` (normalize polygons, masks, union).
-* Move `unique_path` & friends to `utils.py` and reuse everywhere.
-* Centralize CSV/JSON writers in `app_core.py` to remove duplication.
-* Unify device/engine selection in `engine_loader.py` and pass to runners.
-* Optional `overlay.py` to consolidate drawing/summary formatting.
-* Lightweight logger helper for consistent formatting/levels.
-* Unify progress reporting (ETA + smoothing) via one helper.
+## Known challenges
 
-> The goal is to keep `start_app.py` thinner by moving utilities into small modules without changing current behavior.
-
-
-
-## After last release
-* Camera as input directly.
+See [`docs/KNOWN_CHALLENGES.md`](docs/KNOWN_CHALLENGES.md).

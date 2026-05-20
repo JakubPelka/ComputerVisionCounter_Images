@@ -1,0 +1,10 @@
+# Core runtime dependencies for ComputerVision Counter Images.
+# The app may still use bootstrap_env.py for local isolated installation.
+
+ultralytics>=8.0
+opencv-python>=4.8
+Pillow>=10.0
+numpy>=1.26
+torch>=2.2
+torchvision>=0.17
+pandas>=2.0

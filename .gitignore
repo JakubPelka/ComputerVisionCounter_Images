@@ -1,12 +1,112 @@
-/__pycache__
-/models
-/results
-/sampleImages
-/input
-/output
-/weights
-/_pkgs
-/presets
-/Advertisment
+# Python cache / build artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+build/
+dist/
+*.egg-info/
 
-/Reklam
+# Virtual environments / local package installs
+.venv/
+venv/
+env/
+ENV/
+_pkgs/
+pkgs/
+.wheels/
+wheels/*.whl
+
+# Local app working folders
+input/*
+!input/README.md
+models/*
+!models/README.md
+output/*
+!output/.gitkeep
+results/
+logs/
+
+# Images, generated previews and exports
+*.jpg
+*.jpeg
+*.png
+*.bmp
+*.tif
+*.tiff
+*.webp
+*.csv
+*.jsonl
+*.log
+*.tmp
+*.bak
+
+# Keep tracked preset examples, ignore local/private preset variants
+presets/*.local.json
+presets/local/
+
+# AI / ML model files - never commit by accident
+*.pt
+*.pth
+*.onnx
+*.engine
+*.tflite
+*.pb
+*.h5
+*.safetensors
+*.ckpt
+
+# GIS / heavy data artifacts
+*.gpkg
+*.shp
+*.shx
+*.dbf
+*.prj
+*.cpg
+*.geojson
+*.vrt
+*.ovr
+*.aux.xml
+*.tfw
+*.jgw
+*.pgw
+
+# Secrets / local config
+.env
+.env.*
+!.env.example
+secrets/
+*.pem
+*.key
+*.crt
+*.pfx
+*.p12
+
+# Temporary / migration / backup folders
+TEMP/
+temp/
+_tmp/
+backup/
+backups/
+old/
+OLD/
+archive/
+*.zip
+*.7z
+*.rar
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
+
+# Old local marketing/export folders from earlier work
+Advertisment/
+Reklam/
+sampleImages/

@@ -1,20 +1,22 @@
 @echo off
 setlocal
-set "BASE=%~dp0"
-set "PYTHONNOUSERSITE=1"
+cd /d "%~dp0"
 
-rem Try system Python first, then the Windows launcher
-where python >nul 2>&1 && (set "PYEXE=python") || (where py >nul 2>&1 && (set "PYEXE=py -3"))
+if not exist output mkdir output
+if not exist input mkdir input
+if not exist models mkdir models
 
-if not defined PYEXE (
-  echo [ERROR] Python 3.10+ is required. Please install it from https://www.python.org/downloads/
-  echo Then double-click this file again.
-  pause
-  exit /b 1
+echo Starting ComputerVision Counter Images...
+echo.
+
+where py >nul 2>nul
+if %errorlevel%==0 (
+    py -3.12 bootstrap_env.py || py bootstrap_env.py
+    py -3.12 start_app.py || py start_app.py
+) else (
+    python bootstrap_env.py
+    python start_app.py
 )
 
-rem One command handles first-run and subsequent runs:
-rem - bootstrap_env installs/updates into .\_pkgs, enforces local-only imports, then launches the app.
-"%PYEXE%" "%BASE%bootstrap_env.py" "%BASE%start_app.py"
 echo.
 pause
