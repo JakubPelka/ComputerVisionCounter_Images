@@ -267,9 +267,9 @@ class App(tk.Tk):
         cur = self.weights_path.get().strip()
         if cur:
             p = Path(cur)
-            start_dir = p.parent if p.exists() else (Path(__file__).parent / "weights")
+            start_dir = p.parent if p.exists() else (Path(__file__).parent / "models")
         else:
-            start_dir = Path(__file__).parent / "weights"
+            start_dir = Path(__file__).parent / "models"
         pth = filedialog.askopenfilename(
             title="Select weights (.pt)",
             initialdir=str(start_dir.resolve()),
