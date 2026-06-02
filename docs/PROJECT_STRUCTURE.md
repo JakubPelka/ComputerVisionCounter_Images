@@ -15,6 +15,8 @@ requirements.txt          dependency reference
 start.bat                 Windows launcher
 *.py                      current working application code
 docs/                     documentation
+docs/legacy/              older documents kept for reference
+docs/planning/            migration and roadmap notes
 presets/                  tracked example presets
 input/                    local input data, ignored except README
 models/                   local model files, ignored except README
@@ -22,6 +24,12 @@ output/                   generated outputs, ignored
 sample_data/              documented place for tiny non-private samples
 tools/                    future helper scripts
 ```
+
+## Documentation structure
+
+Active user-facing and release-candidate docs live directly under `docs/`.
+Historical files and old generated quick-start documents live under `docs/legacy/`.
+Planning notes and migration checklists live under `docs/planning/`.
 
 ## Why code is not moved to `src/` yet
 

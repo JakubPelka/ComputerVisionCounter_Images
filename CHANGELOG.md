@@ -11,6 +11,8 @@
 - Added repository documentation under `docs/`.
 - Added placeholder README files for local-only folders: `input/`, `models/`, `sample_data/`, `presets/`.
 - Identified known challenges before future development: `src/` refactor, ONNX support, segmentation models, release packaging and tests.
+- Moved legacy and planning documents out of the repository root into `docs/legacy/` and `docs/planning/`.
+- Added `docs/REPOSITORY_REVIEW.md` to capture functionality, current architecture and improvement opportunities before source refactoring.
 
 ## v0.1.0 candidate
 

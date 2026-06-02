@@ -66,42 +66,45 @@ This cleanup keeps the existing working Python files in the repository root for 
 
 ```text
 ComputerVisionCounter_Images/
-├─ README.md
-├─ LICENSE
-├─ CHANGELOG.md
-├─ ROADMAP.md
-├─ requirements.txt
-├─ .gitignore
-├─ .gitattributes
-├─ start.bat
-├─ bootstrap_env.py
-├─ start_app.py
-├─ app_core.py
-├─ engine_loader.py
-├─ legacy_pt_runner.py
-├─ geo_export.py
-├─ onnx_ultra_patch.py
-├─ ui_advanced.py
-├─ ui_panels.py
-├─ widgets.py
-├─ docs/
-│  ├─ QUICKSTART.md
-│  ├─ PROJECT_STRUCTURE.md
-│  ├─ KNOWN_CHALLENGES.md
-│  └─ RELEASE_NOTES_v0.1.0.md
-├─ presets/
-│  ├─ README.md
-│  └─ cv_counter_preset.json
-├─ input/
-│  └─ README.md
-├─ models/
-│  └─ README.md
-├─ output/
-│  └─ .gitkeep
-├─ sample_data/
-│  └─ README.md
-└─ tools/
-   └─ README.md
+|-- README.md
+|-- LICENSE
+|-- CHANGELOG.md
+|-- ROADMAP.md
+|-- requirements.txt
+|-- .gitignore
+|-- .gitattributes
+|-- start.bat
+|-- bootstrap_env.py
+|-- start_app.py
+|-- app_core.py
+|-- engine_loader.py
+|-- legacy_pt_runner.py
+|-- geo_export.py
+|-- onnx_ultra_patch.py
+|-- ui_advanced.py
+|-- ui_panels.py
+|-- widgets.py
+|-- docs/
+|   |-- QUICKSTART.md
+|   |-- PROJECT_STRUCTURE.md
+|   |-- KNOWN_CHALLENGES.md
+|   |-- REPOSITORY_REVIEW.md
+|   |-- RELEASE_NOTES_v0.1.0.md
+|   |-- legacy/
+|   `-- planning/
+|-- presets/
+|   |-- README.md
+|   `-- cv_counter_preset.json
+|-- input/
+|   `-- README.md
+|-- models/
+|   `-- README.md
+|-- output/
+|   `-- .gitkeep
+|-- sample_data/
+|   `-- README.md
+`-- tools/
+    `-- README.md
 ```
 
 ## What should not be committed
