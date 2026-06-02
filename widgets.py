@@ -10,7 +10,18 @@ from pathlib import Path
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 from PIL import Image, ImageTk
-import cv2, numpy as np
+
+try:
+    import cv2
+except Exception:
+    cv2 = None
+
+try:
+    import numpy as np
+except Exception:
+    np = None
+
+_RESAMPLE_LANCZOS = getattr(getattr(Image, "Resampling", Image), "LANCZOS")
 
 # ---------- ScrollableFrame ----------
 class ScrollableFrame(tk.Frame):
@@ -115,10 +126,18 @@ class AOIEditor(tk.Frame):
     # public API
     def load_image(self, path: str):
         self.img_path = path
-        bgr = cv2.imread(path)
-        if bgr is None:
-            bgr = np.zeros((720,1280,3), np.uint8)
-        self.img_bgr = bgr
+        img = None
+        if cv2 is not None:
+            img = cv2.imread(path)
+        if img is None:
+            try:
+                img = Image.open(path).convert("RGB")
+            except Exception:
+                if np is not None:
+                    img = np.zeros((720, 1280, 3), np.uint8)
+                else:
+                    img = Image.new("RGB", (1280, 720), (0, 0, 0))
+        self.img_bgr = img
         self._first_fit_done = False
         self._fit_base()           # try immediately
         self.cur_pts.clear()
@@ -242,7 +261,10 @@ class AOIEditor(tk.Frame):
     def _fit_base(self):
         if self.img_bgr is None:
             return
-        H,W = self.img_bgr.shape[:2]
+        if hasattr(self.img_bgr, "shape"):
+            H, W = self.img_bgr.shape[:2]
+        else:
+            W, H = self.img_bgr.size
         self.update_idletasks()
         cw, ch = self.winfo_width(), self.winfo_height()
         if cw < 100 or ch < 100:
@@ -250,14 +272,21 @@ class AOIEditor(tk.Frame):
             self._needs_refit = True
         s = min(1.0, cw/float(W), ch/float(H))
         self.scale = s
-        disp = cv2.resize(self.img_bgr, (max(1,int(W*s)), max(1,int(H*s))))
-        rgb = cv2.cvtColor(disp, cv2.COLOR_BGR2RGB)
-        self._tk_img = ImageTk.PhotoImage(Image.fromarray(rgb))
+        new_size = (max(1, int(W*s)), max(1, int(H*s)))
+        if cv2 is not None and hasattr(self.img_bgr, "shape"):
+            disp = cv2.resize(self.img_bgr, new_size)
+            rgb = cv2.cvtColor(disp, cv2.COLOR_BGR2RGB)
+            preview = Image.fromarray(rgb)
+        elif hasattr(self.img_bgr, "resize"):
+            preview = self.img_bgr.resize(new_size, _RESAMPLE_LANCZOS)
+        else:
+            preview = Image.new("RGB", new_size, (0, 0, 0))
+        self._tk_img = ImageTk.PhotoImage(preview)
         if self._img_node is None:
             self._img_node = self.canvas.create_image(0,0,anchor="nw",image=self._tk_img)
         else:
             self.canvas.itemconfigure(self._img_node, image=self._tk_img)
-        self.canvas.config(width=disp.shape[1], height=disp.shape[0])
+        self.canvas.config(width=new_size[0], height=new_size[1])
 
     def _img_to_disp(self, x, y): return [x*self.scale, y*self.scale]
     def _disp_to_img(self, x, y): return [x/self.scale, y/self.scale]

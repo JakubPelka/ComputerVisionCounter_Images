@@ -21,6 +21,7 @@ The stable path is Ultralytics YOLO `.pt`. ONNX handling exists, but should rema
 
 ```text
 start.bat              Windows launcher; creates local working folders.
+project_paths.py       Central project paths and local package path helper.
 bootstrap_env.py       Local dependency bootstrap into ./_pkgs.
 start_app.py           Tkinter app, workflow state, threading, runner routing.
 ui_panels.py           Main UI layout helpers.
@@ -46,7 +47,7 @@ input/ models/ output/ Local working folders; contents ignored by Git.
 ## Main improvement opportunities
 
 1. Add behavior protection before refactoring: smoke test checklist, AOI unit tests, export tests, and a tiny non-private sample fixture.
-2. Centralize path handling for `input/`, `models/`, `output/`, `_pkgs/`, presets and generated artifacts.
+2. Continue centralizing path handling around `project_paths.py`, including any remaining output and AOI artifact paths.
 3. Consolidate AOI parsing/persistence/filtering, which currently appears in several modules.
 4. Decide the runner boundary: either make `legacy_pt_runner.py` the official first runner interface, or merge it behind a cleaner engine abstraction with `app_core.py`.
 5. Replace broad silent `except Exception/pass` paths with explicit logging or user-facing warnings where behavior can silently degrade.
@@ -57,4 +58,4 @@ input/ models/ output/ Local working folders; contents ignored by Git.
 
 ## Suggested next step
 
-The next source-code step should be small and protective: centralize project paths or AOI helpers, then run a manual smoke test with AOI off and on. Avoid moving all `.py` files into `src/` until startup, path resolution and output generation are verified.
+The next source-code step should stay small and protective: consolidate AOI helpers, then run a manual smoke test with AOI off and on. Avoid moving all `.py` files into `src/` until startup, path resolution and output generation are verified.

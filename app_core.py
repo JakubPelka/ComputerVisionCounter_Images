@@ -5,13 +5,10 @@ from pathlib import Path
 import csv, json, math, time, datetime
 from typing import Callable, Iterable, List, Optional, Sequence, Tuple, Dict
 
-import sys, os
+from project_paths import add_local_package_paths
+
 def _add_local_pkgs():
-    here = str(Path(__file__).parent.resolve())
-    for d in ["_pkgs", "pkgs"]:
-        cand = os.path.join(here, d)
-        if os.path.isdir(cand) and cand not in sys.path:
-            sys.path.insert(0, cand)
+    add_local_package_paths()
 _add_local_pkgs()
 
 import numpy as np

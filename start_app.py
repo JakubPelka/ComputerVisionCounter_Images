@@ -1,18 +1,16 @@
 # start_app.py — main app entry for ComputerVision Counter
 from __future__ import annotations
 
-import sys, json, time, threading, traceback
+import json, time, threading, traceback
 from pathlib import Path
 import tkinter as tk
 from tkinter import filedialog, messagebox
 
+from project_paths import INPUT_DIR, MODELS_DIR, OUTPUT_DIR, add_local_package_paths
+
 ## Make local vendored packages importable
 def _add_local_pkgs():
-    here = Path(__file__).parent.resolve()
-    for d in ("pkgs", "_pkgs"):
-        p = here / d
-        if p.is_dir() and str(p) not in sys.path:
-            sys.path.insert(0, str(p))
+    add_local_package_paths()
 _add_local_pkgs()
 
 ## Optional OpenCV (used for AOI mask export and AOI backfill)
@@ -45,15 +43,26 @@ import ui_panels
 from ui_advanced import open_advanced
 
 ## Legacy .pt runner (used when engine=auto/pt and model is .pt)
-from legacy_pt_runner import run_legacy_pt
+_legacy_pt_import_error = None
 try:
-    from legacy_pt_runner import build_union_mask as _build_union_mask
-except Exception:
+    from legacy_pt_runner import run_legacy_pt
+except Exception as exc:
+    _legacy_pt_import_error = exc
+
+    def run_legacy_pt(*_args, **_kwargs):
+        raise RuntimeError(f"YOLO .pt runner is unavailable: {_legacy_pt_import_error}") from _legacy_pt_import_error
+
     _build_union_mask = None
-try:
-    from legacy_pt_runner import build_union_masks as _build_union_masks
-except Exception:
     _build_union_masks = None
+else:
+    try:
+        from legacy_pt_runner import build_union_mask as _build_union_mask
+    except Exception:
+        _build_union_mask = None
+    try:
+        from legacy_pt_runner import build_union_masks as _build_union_masks
+    except Exception:
+        _build_union_masks = None
 
 
 def build_union_mask(h: int, w: int, aois):
@@ -196,8 +205,7 @@ class App(tk.Tk):
 
     # ---------- only-output prefill ----------
     def _prefill_only_output(self):
-        base = Path(__file__).parent.resolve()
-        cand_out = base / "output"
+        cand_out = OUTPUT_DIR
         try:
             cand_out.mkdir(exist_ok=True)
         except Exception:
@@ -206,7 +214,7 @@ class App(tk.Tk):
 
     # ---------- file pickers ----------
     def browse_input(self):
-        start = self.input_dir.get().strip() or str((Path(__file__).parent / "input").resolve())
+        start = self.input_dir.get().strip() or str(INPUT_DIR)
         d = filedialog.askdirectory(title="Select input folder with images", initialdir=start)
         if not d:
             return
@@ -219,7 +227,7 @@ class App(tk.Tk):
         """
         ## Ensure base input folder exists and is set in UI.
         """
-        base = Path(self.input_dir.get().strip()) if self.input_dir.get().strip() else (Path(__file__).parent / "input")
+        base = Path(self.input_dir.get().strip()) if self.input_dir.get().strip() else INPUT_DIR
         base.mkdir(parents=True, exist_ok=True)
         if not self.input_dir.get().strip():
             self.input_dir.set(str(base.resolve()))
@@ -228,7 +236,7 @@ class App(tk.Tk):
 
 
     def browse_files(self):
-        start = self.input_dir.get().strip() or str((Path(__file__).parent / "input").resolve())
+        start = self.input_dir.get().strip() or str(INPUT_DIR)
         files = filedialog.askopenfilenames(
             title="Select images",
             initialdir=start,
@@ -258,7 +266,7 @@ class App(tk.Tk):
             pass
 
     def browse_output(self):
-        start = self.output_dir.get().strip() or str((Path(__file__).parent / "output").resolve())
+        start = self.output_dir.get().strip() or str(OUTPUT_DIR)
         d = filedialog.askdirectory(title="Select output folder", initialdir=start)
         if d:
             self.output_dir.set(d)
@@ -267,9 +275,9 @@ class App(tk.Tk):
         cur = self.weights_path.get().strip()
         if cur:
             p = Path(cur)
-            start_dir = p.parent if p.exists() else (Path(__file__).parent / "models")
+            start_dir = p.parent if p.exists() else MODELS_DIR
         else:
-            start_dir = Path(__file__).parent / "models"
+            start_dir = MODELS_DIR
         pth = filedialog.askopenfilename(
             title="Select weights (.pt)",
             initialdir=str(start_dir.resolve()),
@@ -646,7 +654,7 @@ class App(tk.Tk):
                 return
 
             # ensure input/captured exists
-            base_input = Path(self.input_dir.get().strip()) if self.input_dir.get().strip() else (Path(__file__).parent / "input")
+            base_input = Path(self.input_dir.get().strip()) if self.input_dir.get().strip() else INPUT_DIR
             (base_input / "captured").mkdir(parents=True, exist_ok=True)
             out_path = base_input / "captured" / f"captured_{time.strftime('%Y%m%d_%H%M%S')}.jpg"
 
@@ -855,7 +863,7 @@ class App(tk.Tk):
                 return
 
             # Ensure input/ exists (do not rely on helper to keep this self-contained)
-            base_input = Path(self.input_dir.get().strip()) if self.input_dir.get().strip() else (Path(__file__).parent / "input")
+            base_input = Path(self.input_dir.get().strip()) if self.input_dir.get().strip() else INPUT_DIR
             try:
                 base_input.mkdir(parents=True, exist_ok=True)
             except Exception:
@@ -902,7 +910,7 @@ class App(tk.Tk):
                 return
 
         outdir = Path(self.output_dir.get().strip()) if self.output_dir.get().strip() else (
-            Path(__file__).parent.resolve() / "output"
+            OUTPUT_DIR
         )
         self._set_logfile(outdir)
         self._log(f"Output → {outdir}")

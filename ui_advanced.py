@@ -5,6 +5,8 @@ from pathlib import Path
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
+from project_paths import PRESETS_DIR
+
 # Keys used by App.advanced_params (start_app expects these)
 _PARAM_KEYS = [
     "tile", "overlap", "conf", "iou_nms",
@@ -375,7 +377,8 @@ def _export_preset(win, app, cur_vals: dict):
         "seam_weight": float(cur_vals["seam_weight"]),
         "margin_weight": float(cur_vals["margin_weight"]),
     }
-    default_dir = Path.cwd() / "presets"; default_dir.mkdir(parents=True, exist_ok=True)
+    default_dir = PRESETS_DIR
+    default_dir.mkdir(parents=True, exist_ok=True)
     fp = filedialog.asksaveasfilename(
         title="Save advanced preset", defaultextension=".json",
         initialdir=str(default_dir), initialfile="cv_counter_preset.json",

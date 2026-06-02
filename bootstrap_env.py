@@ -8,12 +8,11 @@
 
 from __future__ import annotations
 import os, sys, subprocess, socket, runpy, re
-from pathlib import Path
 from importlib import import_module
 from importlib.metadata import distributions, PackageNotFoundError, version as get_version
 
-BASE = Path(__file__).parent.resolve()
-PKGS_DIR = BASE / "_pkgs"
+from project_paths import PROJECT_ROOT as BASE, PKGS_DIR, add_local_package_paths, ensure_working_dirs
+
 DEFAULT_ENTRY = "start_app.py"
 
 # ---------- logging / net ----------
@@ -30,22 +29,7 @@ def online() -> bool:
 # ---------- sys.path controls ----------
 def add_local_pkgs_and_strip_globals() -> None:
     """Prepend ./_pkgs and strip any other site-packages/dist-packages entries."""
-    p = str(PKGS_DIR)
-    if p not in sys.path:
-        sys.path.insert(0, p)
-
-    keep: list[str] = []
-    for sp in sys.path:
-        low = sp.replace("\\", "/").lower()
-        if "site-packages" in low or "dist-packages" in low:
-            # keep only our local _pkgs entry
-            if Path(sp).resolve() == PKGS_DIR.resolve():
-                keep.append(sp)
-            else:
-                continue
-        else:
-            keep.append(sp)
-    sys.path[:] = keep
+    add_local_package_paths(strict=True)
 
 # ---------- versions present in _pkgs ----------
 def _local_versions() -> dict[str, str]:
@@ -177,6 +161,7 @@ def main():
     os.environ["PYTHONNOUSERSITE"] = "1"
 
     PKGS_DIR.mkdir(parents=True, exist_ok=True)
+    ensure_working_dirs()
     add_local_pkgs_and_strip_globals()
 
     print("=== ComputerVision Counter — Bootstrap ===")

@@ -13,6 +13,10 @@
 - Identified known challenges before future development: `src/` refactor, ONNX support, segmentation models, release packaging and tests.
 - Moved legacy and planning documents out of the repository root into `docs/legacy/` and `docs/planning/`.
 - Added `docs/REPOSITORY_REVIEW.md` to capture functionality, current architecture and improvement opportunities before source refactoring.
+- Added `project_paths.py` as a central place for repository paths and local package path handling.
+- Added lightweight `unittest` coverage for project path behavior.
+- Skipped unreadable local package folders when adding local dependency paths, avoiding hard `PermissionError` failures from inaccessible `_pkgs` folders.
+- Hardened AOI widget and `.pt` runner imports so the app module can still load when optional OpenCV-backed paths are unavailable.
 
 ## v0.1.0 candidate
 

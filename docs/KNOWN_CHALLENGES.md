@@ -6,7 +6,7 @@ The repository should eventually move application code from the root into `src/`
 
 Recommended future approach:
 
-- centralize project paths in one helper module;
+- continue centralizing project paths in `project_paths.py`;
 - keep `input/`, `models/`, `output/` relative to the repository root, not relative to a moved script file;
 - test start from `start.bat`, from terminal and from a fresh clone;
 - only then move files to `src/`.

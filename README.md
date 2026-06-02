@@ -74,6 +74,7 @@ ComputerVisionCounter_Images/
 |-- .gitignore
 |-- .gitattributes
 |-- start.bat
+|-- project_paths.py
 |-- bootstrap_env.py
 |-- start_app.py
 |-- app_core.py
@@ -103,6 +104,8 @@ ComputerVisionCounter_Images/
 |   `-- .gitkeep
 |-- sample_data/
 |   `-- README.md
+|-- tests/
+|   `-- test_project_paths.py
 `-- tools/
     `-- README.md
 ```

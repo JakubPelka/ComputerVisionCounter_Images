@@ -1,29 +1,16 @@
 # engine_loader.py
 # Local-only import guard + engine/device helpers, with *automatic* ONNX metadata patching.
 from __future__ import annotations
-import sys, os, json, ast, re
+import os, json, ast, re
 from pathlib import Path
 
-BASE = Path(__file__).parent.resolve()
-PKGS_DIR = BASE / "_pkgs"
+from project_paths import PKGS_DIR, PROJECT_ROOT, add_local_package_paths
+
+BASE = PROJECT_ROOT
 
 def _add_local_pkgs(strict: bool = True) -> None:
     """Prepend ./_pkgs and (if strict) strip global site/dist-packages."""
-    p = str(PKGS_DIR)
-    if p not in sys.path:
-        sys.path.insert(0, p)
-    if strict:
-        keep = []
-        for sp in sys.path:
-            low = sp.replace("\\", "/").lower()
-            if "site-packages" in low or "dist-packages" in low:
-                if Path(sp).resolve() == PKGS_DIR.resolve():
-                    keep.append(sp)  # keep only our local _pkgs
-                else:
-                    continue
-            else:
-                keep.append(sp)
-        sys.path[:] = keep
+    add_local_package_paths(strict=strict)
 
 # Enforce local-first and strip globals even if start_app.py is launched directly
 _add_local_pkgs(strict=True)
