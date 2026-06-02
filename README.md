@@ -107,6 +107,7 @@ ComputerVisionCounter_Images/
 |   `-- README.md
 |-- tests/
 |   |-- test_aoi_utils.py
+|   |-- test_run_metadata.py
 |   `-- test_project_paths.py
 `-- tools/
     `-- README.md

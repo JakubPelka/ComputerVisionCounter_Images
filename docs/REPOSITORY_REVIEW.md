@@ -12,7 +12,7 @@ ComputerVision Counter Images is a local Windows desktop app for counting object
 4. Optionally draw or reuse named AOI polygons.
 5. Choose quality/preset settings and overlay style.
 6. Run tiled detection.
-7. Export annotated preview images plus CSV/JSON results.
+7. Export annotated preview images plus CSV/JSON results and run metadata.
 8. Export GIS-friendly CSV layers when image georeferencing is available.
 
 The stable path is Ultralytics YOLO `.pt`. ONNX handling exists, but should remain experimental until it has dedicated tests and clearer user-facing behavior.
@@ -52,7 +52,7 @@ input/ models/ output/ Local working folders; contents ignored by Git.
 3. Continue consolidating AOI persistence/filtering. JSON normalization now lives in `aoi_utils.py`, but geometry filtering still appears in several modules.
 4. Decide the runner boundary: either make `legacy_pt_runner.py` the official first runner interface, or merge it behind a cleaner engine abstraction with `app_core.py`.
 5. Replace broad silent `except Exception/pass` paths with explicit logging or user-facing warnings where behavior can silently degrade.
-6. Standardize run outputs: annotated images, full detections, per-image summary, totals, GIS layers, metadata and used preset.
+6. Continue standardizing run outputs: annotated images, full detections, per-image summary, totals, GIS layers, metadata and used preset.
 7. Keep ONNX behind an experimental label until class metadata, device/runtime requirements and output parity are tested.
 8. Add release packaging notes that separate source releases from optional app ZIPs and local `_pkgs` folders.
 9. Consider a later `src/` migration only after paths and launcher behavior are covered by tests.

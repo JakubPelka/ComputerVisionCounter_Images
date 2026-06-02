@@ -19,6 +19,9 @@
 - Hardened AOI widget and `.pt` runner imports so the app module can still load when optional OpenCV-backed paths are unavailable.
 - Added `aoi_utils.py` for shared AOI JSON normalization across the UI and `.pt` runner paths.
 - Added unit tests for AOI normalization compatibility with `polygon`, `points`, `pts`, plain point lists and mapping-style AOI inputs.
+- Added `run_metadata.json` generation for the main legacy `.pt` runner path.
+- Extended run metadata with input paths and optional runner/quality context.
+- Added unit coverage for run metadata output.
 
 ## v0.1.0 candidate
 

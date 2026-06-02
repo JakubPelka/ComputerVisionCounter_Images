@@ -930,6 +930,7 @@ class App(tk.Tk):
             try:
                 if use_legacy_pt:
                     ## --- Legacy .pt path
+                    cfg = self._build_infer_config(model, base, qname)
                     result = run_legacy_pt(
                         imgs=imgs, outdir=outdir, model_path=model,
                         tile=int(base["tile"]), overlap=float(base["overlap"]),
@@ -959,6 +960,7 @@ class App(tk.Tk):
                         totals = result
 
                     self._maybe_export_geojson(imgs, outdir, dets_map)
+                    save_run_metadata(outdir, imgs, cfg, totals, extra=self._run_metadata_extra("legacy_pt_runner", qname))
 
                 else:
                     ## --- Engine-core path (placeholder if you re-enable ONNX in future)
@@ -1052,9 +1054,8 @@ class App(tk.Tk):
             except Exception:
                 pass
 
-    # ---------- engine-core path (kept for future ONNX re-enable) ----------
-    def _run_engine_core(self, imgs, outdir: Path, model, base, qname: str):
-        cfg = InferConfig(
+    def _build_infer_config(self, model: str, base: dict, qname: str) -> InferConfig:
+        return InferConfig(
             model_path=model, engine=self.engine_var.get(), device=self.device_var.get(),
             conf=float(base["conf"]), iou=float(base["iou_nms"]), imgsz=int(base["tile"]),
             classes=self._selected_classes(),
@@ -1069,6 +1070,18 @@ class App(tk.Tk):
             seam_weight=float(base.get("seam_weight", 0.35)),
             overlay_mode=self.overlay_mode.get(), persist_aoi_to_input=True,
         )
+
+    def _run_metadata_extra(self, runner: str, qname: str) -> dict:
+        return {
+            "runner": runner,
+            "quality": qname,
+            "advanced_override": bool(self.advanced_override),
+            "aoi_enabled": bool(self.use_aoi.get()),
+        }
+
+    # ---------- engine-core path (kept for future ONNX re-enable) ----------
+    def _run_engine_core(self, imgs, outdir: Path, model, base, qname: str):
+        cfg = self._build_infer_config(model, base, qname)
         engine = ModelEngine(cfg)
         self._log(f"[engine] names={engine.available_classes()}")
 
@@ -1099,7 +1112,7 @@ class App(tk.Tk):
         rows = [[path] + [cnt.get(c, 0) for c in class_names] for path, cnt in per_image]
         save_csv(rows, header=["image_path"] + class_names, out_path=outdir / "results_per_image.csv")
         save_json(totals, out_path=outdir / "results_totals.json")
-        save_run_metadata(outdir, imgs, cfg, totals)
+        save_run_metadata(outdir, imgs, cfg, totals, extra=self._run_metadata_extra("model_engine", qname))
 
         self._maybe_export_geojson(imgs, outdir, dets_map)
         return totals

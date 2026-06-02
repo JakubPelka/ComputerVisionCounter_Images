@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, asdict
 from pathlib import Path
 import csv, json, math, time, datetime
-from typing import Callable, Iterable, List, Optional, Sequence, Tuple, Dict
+from typing import Any, Callable, Iterable, List, Optional, Sequence, Tuple, Dict
 
 from project_paths import add_local_package_paths
 
@@ -579,12 +579,32 @@ class ModelEngine:
         return per_image_rows, total
 
 # ---- Run metadata helpers ----
-def save_run_metadata(outdir: Path, inputs: List[Path], cfg: InferConfig, totals: Dict[str,int]):
+def build_run_metadata(
+    outdir: Path,
+    inputs: List[Path],
+    cfg: InferConfig,
+    totals: Dict[str, int],
+    extra: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     meta = {
         "started_at": datetime.datetime.now().isoformat(timespec="seconds"),
         "inputs_count": len(inputs),
+        "inputs": [str(p) for p in inputs],
         "output_dir": str(outdir),
         "params": asdict(cfg),
         "totals": totals
     }
+    if extra:
+        meta.update(extra)
+    return meta
+
+
+def save_run_metadata(
+    outdir: Path,
+    inputs: List[Path],
+    cfg: InferConfig,
+    totals: Dict[str, int],
+    extra: Optional[Dict[str, Any]] = None,
+):
+    meta = build_run_metadata(outdir, inputs, cfg, totals, extra=extra)
     save_json(meta, outdir / "run_metadata.json")
