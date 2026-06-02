@@ -75,6 +75,7 @@ ComputerVisionCounter_Images/
 |-- .gitattributes
 |-- start.bat
 |-- project_paths.py
+|-- aoi_utils.py
 |-- bootstrap_env.py
 |-- start_app.py
 |-- app_core.py
@@ -105,6 +106,7 @@ ComputerVisionCounter_Images/
 |-- sample_data/
 |   `-- README.md
 |-- tests/
+|   |-- test_aoi_utils.py
 |   `-- test_project_paths.py
 `-- tools/
     `-- README.md

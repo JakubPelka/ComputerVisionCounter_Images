@@ -27,6 +27,7 @@ start_app.py           Tkinter app, workflow state, threading, runner routing.
 ui_panels.py           Main UI layout helpers.
 ui_advanced.py         Advanced settings and preset import/export UI.
 widgets.py             Scrollable frame and AOI editor widget.
+aoi_utils.py           Shared AOI JSON/shape normalization.
 legacy_pt_runner.py    Primary .pt inference path: tiling, NMS, AOI filters, outputs.
 app_core.py            Alternative engine-oriented core with config, WBF and batch API.
 engine_loader.py       Device/model loading helpers plus ONNX metadata patching.
@@ -48,7 +49,7 @@ input/ models/ output/ Local working folders; contents ignored by Git.
 
 1. Add behavior protection before refactoring: smoke test checklist, AOI unit tests, export tests, and a tiny non-private sample fixture.
 2. Continue centralizing path handling around `project_paths.py`, including any remaining output and AOI artifact paths.
-3. Consolidate AOI parsing/persistence/filtering, which currently appears in several modules.
+3. Continue consolidating AOI persistence/filtering. JSON normalization now lives in `aoi_utils.py`, but geometry filtering still appears in several modules.
 4. Decide the runner boundary: either make `legacy_pt_runner.py` the official first runner interface, or merge it behind a cleaner engine abstraction with `app_core.py`.
 5. Replace broad silent `except Exception/pass` paths with explicit logging or user-facing warnings where behavior can silently degrade.
 6. Standardize run outputs: annotated images, full detections, per-image summary, totals, GIS layers, metadata and used preset.

@@ -17,6 +17,8 @@
 - Added lightweight `unittest` coverage for project path behavior.
 - Skipped unreadable local package folders when adding local dependency paths, avoiding hard `PermissionError` failures from inaccessible `_pkgs` folders.
 - Hardened AOI widget and `.pt` runner imports so the app module can still load when optional OpenCV-backed paths are unavailable.
+- Added `aoi_utils.py` for shared AOI JSON normalization across the UI and `.pt` runner paths.
+- Added unit tests for AOI normalization compatibility with `polygon`, `points`, `pts`, plain point lists and mapping-style AOI inputs.
 
 ## v0.1.0 candidate
 

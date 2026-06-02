@@ -14,6 +14,7 @@ requirements.txt          dependency reference
 .gitattributes            line-ending and binary rules
 start.bat                 Windows launcher
 project_paths.py          central project paths and local package helpers
+aoi_utils.py              shared AOI JSON/shape normalization helpers
 *.py                      current working application code
 docs/                     documentation
 docs/legacy/              older documents kept for reference

@@ -39,3 +39,7 @@ Minimum smoke test before release:
 - verify annotated output;
 - verify CSV/JSON output;
 - confirm no private/heavy files appear in GitHub Desktop before commit.
+
+## 6. AOI consolidation
+
+AOI JSON parsing has started moving into `aoi_utils.py`. The next safe step is to keep reducing duplicate AOI geometry logic while preserving the existing `polygon` / `points` / `pts` compatibility.

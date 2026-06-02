@@ -8,6 +8,8 @@ from typing import Dict, List, Tuple, Optional
 import cv2
 import numpy as np
 
+from aoi_utils import normalize_aois_as_tuples
+
 try:
     from ultralytics import YOLO
 except Exception:
@@ -72,29 +74,11 @@ def _abort_if_needed(stop_cb):
 # --------------------------- AOI helpers ---------------------------
 
 def _normalize_aois(aois_raw) -> List[Tuple[str, List[List[float]]]]:
-    if not aois_raw: return []
-    out: List[Tuple[str, List[List[float]]]] = []
-    if isinstance(aois_raw, dict):
-        if "polygon" in aois_raw or "points" in aois_raw or "pts" in aois_raw:
-            poly = aois_raw.get("polygon") or aois_raw.get("points") or aois_raw.get("pts") or []
-            out.append((aois_raw.get("name", "AOI 1"), poly)); return out
-        for k, v in aois_raw.items():
-            if isinstance(v, dict): poly = v.get("polygon") or v.get("points") or v.get("pts")
-            else: poly = v
-            out.append((str(k), poly))
-        return out
-    if isinstance(aois_raw, list):
-        if len(aois_raw) and isinstance(aois_raw[0], (list, tuple)) and len(aois_raw[0]) == 2:
-            return [("AOI", aois_raw)]
-        for i, it in enumerate(aois_raw, 1):
-            if isinstance(it, dict):
-                nm = str(it.get("name") or f"AOI {i}")
-                poly = it.get("polygon") or it.get("points") or it.get("pts")
-                out.append((nm, poly))
-            else:
-                out.append((f"AOI {i}", it))
-        return out
-    return out
+    return normalize_aois_as_tuples(
+        aois_raw,
+        point_list_name="AOI",
+        indexed_item_names=True,
+    )
 
 def build_aoi_masks(h: int, w: int, aois_raw):
     aois = _normalize_aois(aois_raw)

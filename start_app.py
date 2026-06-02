@@ -6,6 +6,7 @@ from pathlib import Path
 import tkinter as tk
 from tkinter import filedialog, messagebox
 
+from aoi_utils import normalize_aois
 from project_paths import INPUT_DIR, MODELS_DIR, OUTPUT_DIR, add_local_package_paths
 
 ## Make local vendored packages importable
@@ -436,18 +437,7 @@ class App(tk.Tk):
                 data = json.loads(Path(jf).read_text(encoding="utf-8"))
                 img_name = data.get("image")
                 raw = data.get("aois", None)
-                aois = []
-                if isinstance(raw, list):
-                    for a in raw:
-                        pts = a.get("polygon", a.get("points", a.get("pts", [])))
-                        if pts and len(pts) >= 3:
-                            aois.append({"name": a.get("name", "AOI"),
-                                         "polygon": [[float(x), float(y)] for x, y in pts]})
-                else:
-                    legacy_pts = data.get("points", None)
-                    if legacy_pts and len(legacy_pts) >= 3:
-                        aois = [{"name": "AOI 1",
-                                 "polygon": [[float(x), float(y)] for x, y in legacy_pts]}]
+                aois = normalize_aois(raw if raw is not None else data)
                 if img_name in by_name and aois:
                     self.aoi_map[str(by_name[img_name])] = aois
                     loaded += 1

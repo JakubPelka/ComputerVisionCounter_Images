@@ -11,6 +11,8 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 from PIL import Image, ImageTk
 
+from aoi_utils import normalize_aois
+
 try:
     import cv2
 except Exception:
@@ -65,29 +67,7 @@ class ScrollableFrame(tk.Frame):
 # ---------- Helpers ----------
 def _parse_aois_json(data) -> list[dict]:
     """Returns [{'name': str, 'polygon': [[x,y],...]}] for multiple legacy formats."""
-    out = []
-    def _norm(pts): return [[float(x), float(y)] for x, y in pts]
-
-    if isinstance(data, dict):
-        if isinstance(data.get("aois"), list):
-            for a in data["aois"]:
-                pts = a.get("polygon") or a.get("points") or a.get("pts")
-                if pts and len(pts) >= 3:
-                    out.append({"name": a.get("name","AOI"), "polygon": _norm(pts)})
-        else:
-            pts = data.get("polygon") or data.get("points") or data.get("pts")
-            if pts and len(pts) >= 3:
-                out.append({"name": data.get("name","AOI 1"), "polygon": _norm(pts)})
-    elif isinstance(data, list) and data:
-        if isinstance(data[0], dict):
-            for a in data:
-                pts = a.get("polygon") or a.get("points") or a.get("pts")
-                if pts and len(pts) >= 3:
-                    out.append({"name": a.get("name","AOI"), "polygon": _norm(pts)})
-        else:
-            if len(data) >= 3:
-                out.append({"name":"AOI 1", "polygon": _norm(data)})
-    return out
+    return normalize_aois(data)
 
 
 # ---------- AOI Editor ----------
