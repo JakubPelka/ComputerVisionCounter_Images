@@ -28,6 +28,7 @@ ui_panels.py           Main UI layout helpers.
 ui_advanced.py         Advanced settings and preset import/export UI.
 widgets.py             Scrollable frame and AOI editor widget.
 aoi_utils.py           Shared AOI JSON/shape normalization.
+output_utils.py        Shared run output filenames and CSV/JSON helpers.
 legacy_pt_runner.py    Primary .pt inference path: tiling, NMS, AOI filters, outputs.
 app_core.py            Alternative engine-oriented core with config, WBF and batch API.
 engine_loader.py       Device/model loading helpers plus ONNX metadata patching.
@@ -52,7 +53,7 @@ input/ models/ output/ Local working folders; contents ignored by Git.
 3. Continue consolidating AOI persistence/filtering. JSON normalization now lives in `aoi_utils.py`, but geometry filtering still appears in several modules.
 4. Decide the runner boundary: either make `legacy_pt_runner.py` the official first runner interface, or merge it behind a cleaner engine abstraction with `app_core.py`.
 5. Replace broad silent `except Exception/pass` paths with explicit logging or user-facing warnings where behavior can silently degrade.
-6. Continue standardizing run outputs: annotated images, full detections, per-image summary, totals, GIS layers, metadata and used preset.
+6. Continue standardizing run outputs. Filenames and CSV/JSON helpers now live in `output_utils.py`; richer report formats remain future work.
 7. Keep ONNX behind an experimental label until class metadata, device/runtime requirements and output parity are tested.
 8. Add release packaging notes that separate source releases from optional app ZIPs and local `_pkgs` folders.
 9. Consider a later `src/` migration only after paths and launcher behavior are covered by tests.

@@ -9,6 +9,16 @@ import cv2
 import numpy as np
 
 from aoi_utils import normalize_aois_as_tuples
+from output_utils import (
+    DETECTIONS_FULL_CSV,
+    RESULTS_PER_IMAGE_CSV,
+    RESULTS_TOTALS_JSON,
+    ensure_dir as _ensure_dir,
+    per_image_count_table,
+    unique_path as _unique_path,
+    write_csv,
+    write_json,
+)
 
 try:
     from ultralytics import YOLO
@@ -21,16 +31,10 @@ export_geojson_for_image = None
 # ------------------------------ utils ------------------------------
 
 def ensure_dir(p: Path | str) -> Path:
-    p = Path(p); p.mkdir(parents=True, exist_ok=True); return p
+    return _ensure_dir(p)
 
 def unique_path(p: Path) -> Path:
-    if not Path(p).exists(): return Path(p)
-    d, stem, suf = Path(p).parent, Path(p).stem, Path(p).suffix
-    k = 1
-    while True:
-        q = d / f"{stem}_{k}{suf}"
-        if not q.exists(): return q
-        k += 1
+    return _unique_path(p)
 
 def bbox_center(b: Tuple[float, float, float, float]) -> Tuple[float, float]:
     return (0.5 * (b[0] + b[2]), 0.5 * (b[1] + b[3]))
@@ -432,29 +436,26 @@ def run_legacy_pt(
 
     # --- run-level artifacts ---
     if full_rows:
-        p_csv = outdir / "detections_full.csv"
+        p_csv = outdir / DETECTIONS_FULL_CSV
         try:
-            with open(unique_path(p_csv), "w", encoding="utf-8") as f:
-                f.write("image,cls,conf,x1,y1,x2,y2,cx,cy,aoi\n")
-                for r in full_rows:
-                    f.write(",".join(map(str, r)) + "\n")
+            write_csv(
+                full_rows,
+                p_csv,
+                header=["image", "cls", "conf", "x1", "y1", "x2", "y2", "cx", "cy", "aoi"],
+                unique=True,
+            )
         except Exception as e:
             logger(f"[WARN] failed writing {p_csv.name}: {e}")
 
     if per_image_counts:
         try:
-            all_classes = sorted({k for _, d in per_image_counts for k in d.keys()})
-            with open(unique_path(outdir / "results_per_image.csv"), "w", encoding="utf-8") as f:
-                f.write("image," + ",".join(all_classes) + "\n")
-                for img_name, d in per_image_counts:
-                    f.write(img_name + "," + ",".join(str(d.get(k,0)) for k in all_classes) + "\n")
+            header, rows = per_image_count_table(per_image_counts, image_header="image")
+            write_csv(rows, outdir / RESULTS_PER_IMAGE_CSV, header=header, unique=True)
         except Exception as e:
             logger(f"[WARN] failed writing results_per_image.csv: {e}")
 
     try:
-        import json as _json
-        with open(unique_path(outdir / "results_totals.json"), "w", encoding="utf-8") as f:
-            _json.dump(totals, f, ensure_ascii=False, indent=2)
+        write_json(totals, outdir / RESULTS_TOTALS_JSON, unique=True)
     except Exception as e:
         logger(f"[WARN] failed writing results_totals.json: {e}")
 

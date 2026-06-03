@@ -1,8 +1,16 @@
 # geo_export.py — CSV-only GIS export (points & boxes as WKT; AOIs as WKT)
 from __future__ import annotations
-import json, math, re
+import math, re
 from pathlib import Path
 from typing import Iterable, Optional, Tuple, Dict, Any
+
+from output_utils import (
+    GIS_AOIS_CSV_SUFFIX,
+    GIS_DETECTIONS_BOX_CSV_SUFFIX,
+    GIS_DETECTIONS_POINT_CSV_SUFFIX,
+    suffixed_csv_name,
+    write_csv,
+)
 
 try:
     import tifffile  # optional, for GeoTIFF georeferencing
@@ -11,29 +19,6 @@ except Exception:
 
 Affine = Tuple[float, float, float, float, float, float]
 _WF_EXTS = {".wld", ".jgw", ".jpgw", ".jpegw", ".pgw", ".pngw", ".tfw", ".gfw", ".gifw", ".bpw", ".tifw"}
-
-# -------- utils --------
-
-def _unique_path(p: Path) -> Path:
-    """
-    ## Non-destructive path: p, p_1, p_2, ...
-    """
-    p = Path(p)
-    if not p.exists():
-        return p
-    d, stem, suf = p.parent, p.stem, p.suffix
-    k = 1
-    while True:
-        q = d / f"{stem}_{k}{suf}"
-        if not q.exists():
-            return q
-        k += 1
-
-def _csv_escape(s: str) -> str:
-    s = "" if s is None else str(s)
-    if any(ch in s for ch in [",", '"', "\n", "\r"]):
-        s = '"' + s.replace('"', '""') + '"'
-    return s
 
 # -------- worldfile / geotiff helpers --------
 
@@ -194,41 +179,50 @@ def export_geojson_for_image(  # noqa: API kept for start_app; now writes CSVs o
             if all(_finite_xy(px,py) for (px,py) in poly_geo):
                 aoi_rows.append({"image": image_path.name, "name": name, "wkt": _poly_wkt(poly_geo)})
         if aoi_rows:
-            p = _unique_path(out_dir / f"{image_path.stem}__aois.csv")
-            with p.open("w", encoding="utf-8") as f:
-                f.write("image,name,wkt\n")
-                for r in aoi_rows:
-                    f.write(",".join([_csv_escape(r["image"]), _csv_escape(r["name"]), _csv_escape(r["wkt"])]) + "\n")
+            write_csv(
+                [[r["image"], r["name"], r["wkt"]] for r in aoi_rows],
+                out_dir / suffixed_csv_name(image_path.stem, GIS_AOIS_CSV_SUFFIX),
+                header=["image", "name", "wkt"],
+                unique=True,
+            )
 
     point_path = None
     box_path = None
 
     # ---- write detections CSVs (unique names) ----
     if points_rows:
-        point_path = _unique_path(out_dir / f"{image_path.stem}__detections_point.csv")
-        with point_path.open("w", encoding="utf-8") as f:
-            f.write("image,cls,conf,x,y,aoi\n")
-            for r in points_rows:
-                f.write(",".join([
-                    _csv_escape(r["image"]),
-                    _csv_escape("" if r["cls"] is None else str(r["cls"])),
+        point_path = write_csv(
+            [
+                [
+                    r["image"],
+                    "" if r["cls"] is None else str(r["cls"]),
                     f"{float(r['conf']):.6f}",
                     f"{float(r['x']):.6f}",
                     f"{float(r['y']):.6f}",
-                    _csv_escape(r.get("aoi","")),
-                ]) + "\n")
+                    r.get("aoi", ""),
+                ]
+                for r in points_rows
+            ],
+            out_dir / suffixed_csv_name(image_path.stem, GIS_DETECTIONS_POINT_CSV_SUFFIX),
+            header=["image", "cls", "conf", "x", "y", "aoi"],
+            unique=True,
+        )
 
     if boxes_rows:
-        box_path = _unique_path(out_dir / f"{image_path.stem}__detections_box.csv")
-        with box_path.open("w", encoding="utf-8") as f:
-            f.write("image,cls,conf,aoi,wkt\n")
-            for r in boxes_rows:
-                f.write(",".join([
-                    _csv_escape(r["image"]),
-                    _csv_escape("" if r["cls"] is None else str(r["cls"])),
+        box_path = write_csv(
+            [
+                [
+                    r["image"],
+                    "" if r["cls"] is None else str(r["cls"]),
                     f"{float(r['conf']):.6f}",
-                    _csv_escape(r.get("aoi","")),
-                    _csv_escape(r["wkt"]),
-                ]) + "\n")
+                    r.get("aoi", ""),
+                    r["wkt"],
+                ]
+                for r in boxes_rows
+            ],
+            out_dir / suffixed_csv_name(image_path.stem, GIS_DETECTIONS_BOX_CSV_SUFFIX),
+            header=["image", "cls", "conf", "aoi", "wkt"],
+            unique=True,
+        )
 
     return point_path or box_path

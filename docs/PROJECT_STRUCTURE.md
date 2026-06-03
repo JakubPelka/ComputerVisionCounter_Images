@@ -15,6 +15,7 @@ requirements.txt          dependency reference
 start.bat                 Windows launcher
 project_paths.py          central project paths and local package helpers
 aoi_utils.py              shared AOI JSON/shape normalization helpers
+output_utils.py           shared run output filenames and CSV/JSON helpers
 *.py                      current working application code
 docs/                     documentation
 docs/legacy/              older documents kept for reference

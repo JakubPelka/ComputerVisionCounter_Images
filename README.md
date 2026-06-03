@@ -76,6 +76,7 @@ ComputerVisionCounter_Images/
 |-- start.bat
 |-- project_paths.py
 |-- aoi_utils.py
+|-- output_utils.py
 |-- bootstrap_env.py
 |-- start_app.py
 |-- app_core.py
@@ -107,6 +108,8 @@ ComputerVisionCounter_Images/
 |   `-- README.md
 |-- tests/
 |   |-- test_aoi_utils.py
+|   |-- test_geo_export.py
+|   |-- test_output_utils.py
 |   |-- test_run_metadata.py
 |   `-- test_project_paths.py
 `-- tools/

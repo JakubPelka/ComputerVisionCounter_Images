@@ -7,6 +7,7 @@ import tkinter as tk
 from tkinter import filedialog, messagebox
 
 from aoi_utils import normalize_aois
+from output_utils import RESULTS_PER_IMAGE_CSV, RESULTS_TOTALS_JSON
 from project_paths import INPUT_DIR, MODELS_DIR, OUTPUT_DIR, add_local_package_paths
 
 ## Make local vendored packages importable
@@ -1110,8 +1111,8 @@ class App(tk.Tk):
 
         class_names = sorted({k for _, cnt in per_image for k in cnt.keys()})
         rows = [[path] + [cnt.get(c, 0) for c in class_names] for path, cnt in per_image]
-        save_csv(rows, header=["image_path"] + class_names, out_path=outdir / "results_per_image.csv")
-        save_json(totals, out_path=outdir / "results_totals.json")
+        save_csv(rows, header=["image_path"] + class_names, out_path=outdir / RESULTS_PER_IMAGE_CSV)
+        save_json(totals, out_path=outdir / RESULTS_TOTALS_JSON)
         save_run_metadata(outdir, imgs, cfg, totals, extra=self._run_metadata_extra("model_engine", qname))
 
         self._maybe_export_geojson(imgs, outdir, dets_map)

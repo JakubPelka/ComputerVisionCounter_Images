@@ -2,9 +2,17 @@
 from __future__ import annotations
 from dataclasses import dataclass, asdict
 from pathlib import Path
-import csv, json, math, time, datetime
+import math, time, datetime
 from typing import Any, Callable, Iterable, List, Optional, Sequence, Tuple, Dict
 
+from output_utils import (
+    DETECTIONS_FULL_CSV,
+    RUN_METADATA_JSON,
+    ensure_dir as _ensure_dir,
+    unique_path,
+    write_csv,
+    write_json,
+)
 from project_paths import add_local_package_paths
 
 def _add_local_pkgs():
@@ -29,7 +37,7 @@ Polygon = List[Point]
 # -------------------- IO utils --------------------
 
 def ensure_dir(p: Path) -> None:
-    p.mkdir(parents=True, exist_ok=True)
+    _ensure_dir(p)
 
 def collect_images(path: Path) -> List[Path]:
     if path.is_file():
@@ -40,33 +48,14 @@ def collect_images(path: Path) -> List[Path]:
     return imgs
 
 def save_csv(rows: Sequence[Sequence], header: Optional[Sequence[str]], out_path: Path) -> None:
-    ensure_dir(out_path.parent)
-    out_path = safe_path(out_path)
-    with out_path.open("w", newline="", encoding="utf-8") as f:
-        w = csv.writer(f)
-        if header:
-            w.writerow(header)
-        for r in rows:
-            w.writerow(r)
+    write_csv(rows, out_path, header=header, unique=True)
 
 def save_json(obj, out_path: Path) -> None:
-    ensure_dir(out_path.parent)
-    out_path = safe_path(out_path)
-    with out_path.open("w", encoding="utf-8") as f:
-        json.dump(obj, f, ensure_ascii=False, indent=2)
+    write_json(obj, out_path, unique=True)
 
 def safe_path(p: Path) -> Path:
     """Avoid overwriting by appending _1, _2, ..."""
-    if not p.exists():
-        return p
-    stem, suf = p.stem, p.suffix
-    parent = p.parent
-    k = 1
-    while True:
-        cand = parent / f"{stem}_{k}{suf}"
-        if not cand.exists():
-            return cand
-        k += 1
+    return unique_path(p)
 
 def common_input_root(paths: List[Path]) -> Path:
     if not paths: return Path.cwd()
@@ -560,12 +549,13 @@ class ModelEngine:
 
         # Write the full per-detection CSV once per run
         if full_rows:
-            full_csv = outdir / "detections_full.csv"
-            ensure_dir(full_csv.parent)
-            with full_csv.open("w", newline="", encoding="utf-8") as f:
-                w = csv.writer(f)
-                w.writerow(["image","cls","conf","x1","y1","x2","y2","cx","cy","in_aoi"])
-                w.writerows(full_rows)
+            full_csv = outdir / DETECTIONS_FULL_CSV
+            write_csv(
+                full_rows,
+                full_csv,
+                header=["image", "cls", "conf", "x1", "y1", "x2", "y2", "cx", "cy", "in_aoi"],
+                unique=False,
+            )
             print(f"[INFO] Wrote per-detection list: {full_csv}")
 
         # Aggregate totals
@@ -607,4 +597,4 @@ def save_run_metadata(
     extra: Optional[Dict[str, Any]] = None,
 ):
     meta = build_run_metadata(outdir, inputs, cfg, totals, extra=extra)
-    save_json(meta, outdir / "run_metadata.json")
+    save_json(meta, outdir / RUN_METADATA_JSON)

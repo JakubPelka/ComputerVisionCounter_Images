@@ -22,6 +22,10 @@
 - Added `run_metadata.json` generation for the main legacy `.pt` runner path.
 - Extended run metadata with input paths and optional runner/quality context.
 - Added unit coverage for run metadata output.
+- Added `output_utils.py` with shared output filenames, CSV/JSON writers and per-image count table helpers.
+- Switched legacy `.pt` run-level CSV/JSON artifact writing to the shared output helpers while preserving unique output names.
+- Switched GIS CSV export writing to the shared output helpers while preserving existing GIS filenames.
+- Added unit coverage for GIS affine conversion, WKT formatting and GIS output filename suffixes.
 
 ## v0.1.0 candidate
 
