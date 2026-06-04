@@ -15,9 +15,13 @@ Recommended future approach:
 
 ONNX support should be treated as experimental until tested. The stable user-facing path is YOLO `.pt` models. Generic ONNX files may miss metadata expected by Ultralytics-based loading.
 
+The release-candidate bootstrap intentionally does not install ONNX or ONNX Runtime packages. Add them back only when the ONNX path has a tested workflow and clear dependency policy.
+
 ## 3. Segmentation models
 
 Segmentation model support is a separate feature track. It should not be mixed with the cleanup release.
+
+Segmentation-specific dependencies should stay out of the default bootstrap until the feature is designed and tested.
 
 ## 4. Release packaging
 

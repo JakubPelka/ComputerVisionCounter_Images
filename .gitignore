@@ -45,6 +45,13 @@ logs/
 *.tmp
 *.bak
 
+# Documentation screenshots and small README assets
+!docs/images/
+!docs/images/*.jpg
+!docs/images/*.jpeg
+!docs/images/*.png
+!docs/images/*.webp
+
 # Keep tracked preset examples, ignore local/private preset variants
 presets/*.local.json
 presets/local/

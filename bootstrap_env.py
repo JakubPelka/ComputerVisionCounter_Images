@@ -1,6 +1,6 @@
 # bootstrap_env.py
 # Bootstrapper for ComputerVision Counter
-# - Installs only missing/outdated packages into ./_pkgs (no forced reinstall)
+# - Installs only missing/outdated stable .pt workflow packages into ./_pkgs
 # - Enforces local-only imports (strip global site/dist-packages)
 # - Prints module versions and file paths (so you can verify they load from ./_pkgs)
 # - Sets PYTHONNOUSERSITE=1
@@ -106,29 +106,26 @@ def ensure_pkg(req: str) -> bool:
     return False
 
 # ---------- install set ----------
+
+STABLE_PT_REQUIREMENTS = [
+    # Direct runtime imports for the supported v0.1.0 workflow.
+    # Ultralytics pulls its own ML stack dependencies such as torch/torchvision.
+    "numpy>=1.26.4",
+    "opencv-python>=4.8.0",
+    "Pillow>=10.0.0",
+    "ultralytics>=8.3.0",
+]
+
+
 def install_minimal_online() -> None:
     """
-    Only install if missing or too old. No forced upgrades on subsequent runs.
-    """
-    # IMPORTANT: accept newer NumPy too to avoid downgrade loops
-    ensure_pkg("numpy>=1.26.4")
-    ensure_pkg("opencv-python>=4.8.0")
-    ensure_pkg("ultralytics>=8.3.0")
-    ensure_pkg("shapely>=2.0.0")
-    ensure_pkg("pyproj>=3.6.0")
-    ensure_pkg("onnx>=1.14.0")
-    ensure_pkg("onnxruntime>=1.22.1")
+    Only install packages needed for the stable YOLO .pt workflow.
 
-    # ONNX Runtime: install only if neither CPU nor GPU build present
-    present = _local_versions()
-    has_ort = ("onnxruntime" in present) or ("onnxruntime-gpu" in present)
-    if not has_ort:
-        rc = run_pip(["install", "--no-cache-dir", "--no-warn-script-location",
-                      "--target", str(PKGS_DIR), "onnxruntime-gpu"])
-        if rc != 0:
-            log("[INFO] onnxruntime-gpu failed or not suitable; trying CPU build…")
-            run_pip(["install", "--no-cache-dir", "--no-warn-script-location",
-                     "--target", str(PKGS_DIR), "onnxruntime"])
+    ONNX, ONNX Runtime, segmentation-specific and GIS-heavy packages are
+    intentionally not bootstrapped for the v0.1.0 release candidate.
+    """
+    for req in STABLE_PT_REQUIREMENTS:
+        ensure_pkg(req)
 
 # ---------- banner ----------
 def smoke_imports_print_paths() -> None:
@@ -145,7 +142,7 @@ def smoke_imports_print_paths() -> None:
         except Exception as e:
             print(f"[MISS] {modname} — {e}")
 
-    for mod in ["numpy", "cv2", "ultralytics", "torch", "torchvision", "onnxruntime"]:
+    for mod in ["numpy", "cv2", "PIL", "ultralytics", "torch", "torchvision"]:
         info(mod)
 
 def verify_yolo11_shapes() -> None:

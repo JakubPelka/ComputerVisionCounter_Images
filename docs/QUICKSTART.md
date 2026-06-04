@@ -34,6 +34,10 @@ python bootstrap_env.py
 python start_app.py
 ```
 
+The bootstrapper installs only the minimal direct dependencies for the stable
+YOLO `.pt` workflow into `_pkgs/`. ONNX, ONNX Runtime and segmentation-specific
+packages are intentionally not bootstrapped in this release candidate.
+
 ## 4. Run a counting job
 
 1. Select input image folder or image files.

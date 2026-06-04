@@ -32,6 +32,11 @@ ONNX support is treated as experimental/known issue and should not be presented 
 - A YOLO `.pt` model compatible with Ultralytics.
 - Optional NVIDIA GPU/CUDA for faster inference. CPU can work but may be slower.
 
+Dependency policy for this release candidate: `bootstrap_env.py` and
+`requirements.txt` intentionally cover only the minimal direct dependencies for
+the stable YOLO `.pt` workflow. ONNX, ONNX Runtime and segmentation-specific
+dependencies are not installed by the bootstrapper yet.
+
 ## Quick start
 
 Clone or download the repository, place your model in a local `models/` folder, place test images in a local `input/` folder, then start the app.
