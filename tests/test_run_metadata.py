@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import sys
 import unittest
 from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / 'src'))
 
 from app_core import InferConfig, build_run_metadata
 

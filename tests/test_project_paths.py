@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / 'src'))
+
 import unittest
 
 import project_paths as paths
@@ -9,7 +12,7 @@ import project_paths as paths
 class ProjectPathsTest(unittest.TestCase):
     def test_project_root_contains_public_files(self):
         self.assertTrue((paths.PROJECT_ROOT / "README.md").is_file())
-        self.assertTrue((paths.PROJECT_ROOT / "start_app.py").is_file())
+        self.assertTrue((paths.PROJECT_ROOT / "src" / "start_app.py").is_file())
 
     def test_working_dirs_are_under_project_root(self):
         for path in paths.WORKING_DIRS:

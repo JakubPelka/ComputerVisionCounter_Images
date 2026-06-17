@@ -7,7 +7,7 @@ import os
 import sys
 from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).resolve().parent
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 INPUT_DIR = PROJECT_ROOT / "input"
 MODELS_DIR = PROJECT_ROOT / "models"

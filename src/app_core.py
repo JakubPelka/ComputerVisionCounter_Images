@@ -15,10 +15,6 @@ from output_utils import (
 )
 from project_paths import add_local_package_paths
 
-def _add_local_pkgs():
-    add_local_package_paths()
-_add_local_pkgs()
-
 import numpy as np
 
 from engine_loader import load_yolo_model, resolve_device
