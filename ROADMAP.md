@@ -9,7 +9,8 @@ Goal: publish a clean baseline release without changing the working application 
 - [x] Expanded `.gitignore`.
 - [x] Basic repository documentation.
 - [x] Code moved to `src/` layout with MVC architecture.
-- [ ] Manual smoke test on Windows after `src/` refactor.
+- [x] Manual user smoke test on Windows after src refactor.
+- [ ] Optional fresh-clone smoke test before GitHub release.
 - [ ] Create GitHub release after testing.
 
 ## v0.1.x - safe maintenance

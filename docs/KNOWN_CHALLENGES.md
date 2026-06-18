@@ -1,15 +1,16 @@
 # Known challenges
 
-## 1. Move scripts to `src/`
+## 1. Validating the `src/` layout
 
-The repository should eventually move application code from the root into `src/`. This should not be done blindly because path handling may change. The current release-candidate cleanup keeps code in place to avoid breaking a working app.
+The application code has already been moved into `src/` as part of the v0.1.0 release candidate. The remaining risk is not the move itself, but validating startup, imports, paths and output behavior after the refactor.
 
 Recommended future approach:
 
-- continue centralizing project paths in `project_paths.py`;
-- keep `input/`, `models/`, `output/` relative to the repository root, not relative to a moved script file;
-- test start from `start.bat`, from terminal and from a fresh clone;
-- only then move files to `src/`.
+- verify start from start.bat;
+- verify manual start from .venv;
+- verify input/models/output paths;
+- verify AOI and export behavior;
+- keep future structural changes small and tested.
 
 ## 2. ONNX support
 

@@ -17,7 +17,7 @@ The application runs locally. Images, model weights and outputs stay on your mac
 - Creates annotated preview images.
 - Exports CSV/JSON result files for further analysis.
 - Provides GIS-friendly exports for georeferenced images when supported by the input data.
-- Uses a local Python package folder so the project does not need to modify the global Python environment.
+- Uses a local Python virtual environment so the project does not need to modify the global Python environment.
 
 ## Current scope
 

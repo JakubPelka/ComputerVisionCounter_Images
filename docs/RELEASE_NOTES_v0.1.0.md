@@ -18,7 +18,7 @@ This release is intended as the first cleaned baseline release of ComputerVision
 - Private test images.
 - Generated outputs.
 - Local package folders.
-- ONNX or ONNX Runtime packages in the default bootstrap path.
+- ONNX or ONNX Runtime packages in the default .venv setup.
 - ONNX as a stable supported workflow.
 - Segmentation model support.
 - Segmentation-specific dependencies.

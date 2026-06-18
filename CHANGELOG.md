@@ -26,10 +26,16 @@
 - Switched legacy `.pt` run-level CSV/JSON artifact writing to the shared output helpers while preserving unique output names.
 - Switched GIS CSV export writing to the shared output helpers while preserving existing GIS filenames.
 - Added unit coverage for GIS affine conversion, WKT formatting and GIS output filename suffixes.
-- Aligned `bootstrap_env.py` and `requirements.txt` around the minimal direct dependency set for the stable YOLO `.pt` workflow.
-- Kept ONNX, ONNX Runtime, segmentation-specific and GIS-heavy optional packages out of the default bootstrap path for the v0.1.0 release candidate.
+- Aligned `requirements.txt` around the minimal direct dependency set for the stable YOLO `.pt` workflow.
+- Kept ONNX, ONNX Runtime, segmentation-specific and GIS-heavy optional packages out of the default `.venv` path for the v0.1.0 release candidate.
 - Added `.gitignore` exceptions for documentation screenshots under `docs/images/` while keeping local datasets and generated images ignored.
+- Moved application code into `src/`.
+- Added MVC-style separation with `ui_main.py`, `app_controller.py` and `runners/`.
+- Replaced the old `bootstrap_env.py` workflow with a standard `.venv` startup through `start.bat`.
+- Simplified `project_paths.py` to centralize repository folders without forcing `_pkgs` into runtime.
+- Updated README and Quickstart for the new `src/` layout.
+- User smoke test passed for standard app usage.
 
 ## v0.1.0 candidate
 
-Initial cleaned release candidate after repository hygiene pass. The working application code is intentionally not refactored in this cleanup step.
+Initial cleaned release candidate after repository hygiene pass and structural refactor into `src/`.
