@@ -4,17 +4,9 @@ from __future__ import annotations
 import os, json, ast, re
 from pathlib import Path
 
-from project_paths import PKGS_DIR, PROJECT_ROOT, add_local_package_paths
+from project_paths import PROJECT_ROOT
 
 BASE = PROJECT_ROOT
-
-def _add_local_pkgs(strict: bool = True) -> None:
-    """Prepend ./_pkgs and (if strict) strip global site/dist-packages."""
-    add_local_package_paths(strict=strict)
-
-# Enforce local-first and strip globals even if start_app.py is launched directly
-_add_local_pkgs(strict=True)
-os.environ.setdefault("PYTHONNOUSERSITE", "1")
 
 # ----------------- Device helpers -----------------
 
@@ -68,8 +60,8 @@ def _read_onnx_metadata(model_path: str) -> dict:
         import onnx  # type: ignore
     except Exception as e:
         raise RuntimeError(
-            "ONNX Python package is not available in ./_pkgs. "
-            "Run bootstrap_env.py again."
+            "ONNX support is experimental and not included in the v0.1.0 default setup. "
+            "Use a YOLO .pt model or install ONNX dependencies manually."
         ) from e
     m = onnx.load(model_path)
     try:
@@ -193,7 +185,7 @@ def load_engine(model_path: str, engine: str | None = "auto"):
             import onnx  # noqa: F401
         except Exception as e:
             raise RuntimeError(
-                "ONNX / ONNXRuntime not found in ./_pkgs. Run bootstrap_env.py again."
+                "ONNX support is experimental and not included in the v0.1.0 default setup. Use a YOLO .pt model or install ONNX dependencies manually."
             ) from e
 
         # Ensure metadata (names/stride/task/batch) — auto-patch if needed

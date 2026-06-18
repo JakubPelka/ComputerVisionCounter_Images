@@ -13,7 +13,6 @@ from output_utils import (
     write_csv,
     write_json,
 )
-from project_paths import add_local_package_paths
 
 import numpy as np
 

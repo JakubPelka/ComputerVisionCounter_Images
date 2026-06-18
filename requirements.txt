@@ -1,5 +1,5 @@
 # Core runtime dependencies for the stable ComputerVision Counter Images .pt workflow.
-# bootstrap_env.py installs this same minimal direct set into ./_pkgs.
+# start.bat creates a .venv and installs these dependencies.
 # Ultralytics resolves its own ML stack dependencies, including torch/torchvision.
 # ONNX, ONNX Runtime and segmentation-specific dependencies are intentionally
 # not included for the v0.1.0 release candidate.

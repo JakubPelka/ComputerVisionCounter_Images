@@ -8,12 +8,7 @@ from tkinter import filedialog, messagebox
 
 from aoi_utils import normalize_aois
 from output_utils import RESULTS_PER_IMAGE_CSV, RESULTS_TOTALS_JSON
-from project_paths import INPUT_DIR, MODELS_DIR, OUTPUT_DIR, add_local_package_paths
-
-## Make local vendored packages importable
-def _add_local_pkgs():
-    add_local_package_paths()
-_add_local_pkgs()
+from project_paths import INPUT_DIR, MODELS_DIR, OUTPUT_DIR
 
 ## Optional OpenCV (used for AOI mask export and AOI backfill)
 try:

@@ -30,13 +30,15 @@ start.bat
 Manual start:
 
 ```bat
-python bootstrap_env.py
-python start_app.py
+python -m venv .venv
+.venv\Scripts\activate
+pip install -r requirements.txt
+python src\start_app.py
 ```
 
-The bootstrapper installs only the minimal direct dependencies for the stable
-YOLO `.pt` workflow into `_pkgs/`. ONNX, ONNX Runtime and segmentation-specific
-packages are intentionally not bootstrapped in this release candidate.
+The launcher installs only the minimal direct dependencies for the stable
+YOLO `.pt` workflow into `.venv`. ONNX, ONNX Runtime and segmentation-specific
+packages are intentionally not installed by default in this release candidate.
 
 ## 4. Run a counting job
 

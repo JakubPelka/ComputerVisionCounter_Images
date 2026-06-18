@@ -1,6 +1,6 @@
 # Project structure
 
-This cleanup uses a conservative structure because the application already works and the current code should not be refactored before release testing.
+This project has been cleanly refactored into an MVC architecture to ensure long-term stability and maintainability.
 
 ## Current release-candidate structure
 
@@ -12,21 +12,26 @@ ROADMAP.md                planned development
 requirements.txt          dependency reference
 .gitignore                blocks generated/private/heavy files
 .gitattributes            line-ending and binary rules
-start.bat                 Windows launcher
-project_paths.py          central project paths and local package helpers
-aoi_utils.py              shared AOI JSON/shape normalization helpers
-output_utils.py           shared run output filenames and CSV/JSON helpers
-*.py                      current working application code
+start.bat                 Windows launcher (creates .venv)
+start.sh                  Linux launcher (creates .venv)
+src/                      Main application source code
+|-- start_app.py          Main entrypoint
+|-- ui_main.py            UI layout and bindings (View)
+|-- app_controller.py     Execution logic (Controller)
+|-- project_paths.py      Central project paths reference
+|-- aoi_utils.py          Shared AOI normalization helpers
+|-- output_utils.py       Shared run output filenames
+|-- runners/              Inference engine implementations
+|   |-- base.py           Abstract BaseModelRunner
+|   |-- factory.py        RunnerFactory
+|   |-- legacy_runner.py  YOLO .pt runner implementation
 docs/                     documentation
-docs/legacy/              older documents kept for reference
-docs/planning/            migration and roadmap notes
 presets/                  tracked example presets
 input/                    local input data, ignored except README
 models/                   local model files, ignored except README
 output/                   generated outputs, ignored
 sample_data/              documented place for tiny non-private samples
 tests/                    lightweight behavior-protection tests
-tools/                    future helper scripts
 ```
 
 ## Documentation structure
@@ -35,8 +40,9 @@ Active user-facing and release-candidate docs live directly under `docs/`.
 Historical files and old generated quick-start documents live under `docs/legacy/`.
 Planning notes and migration checklists live under `docs/planning/`.
 
-## Why code is not moved to `src/` yet
+## Architecture Note
 
-Moving the Python files into `src/` is a real refactor, not only a folder cleanup. The current code used paths relative to the Python file location in several places. Moving files without checking path handling can change where the app looks for `input/`, `models/`, `output/` and local package folders.
-
-Path handling has started moving into `project_paths.py`. Recommendation: keep strengthening that boundary and tests first, then solve the `src/` refactor as a separate issue with startup/output smoke testing.
+The application separates concerns cleanly:
+- `ui_main.py` handles Tkinter layouts and forms.
+- `app_controller.py` manages threading, orchestrates model execution, and handles IO.
+- `runners/` directory allows easily swapping inference engines (e.g. YOLO vs ONNX) without altering core logic.

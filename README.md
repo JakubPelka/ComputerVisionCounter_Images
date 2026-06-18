@@ -32,10 +32,10 @@ ONNX support is treated as experimental/known issue and should not be presented 
 - A YOLO `.pt` model compatible with Ultralytics.
 - Optional NVIDIA GPU/CUDA for faster inference. CPU can work but may be slower.
 
-Dependency policy for this release candidate: `bootstrap_env.py` and
+Dependency policy for this release candidate: `start.bat` and
 `requirements.txt` intentionally cover only the minimal direct dependencies for
-the stable YOLO `.pt` workflow. ONNX, ONNX Runtime and segmentation-specific
-dependencies are not installed by the bootstrapper yet.
+the stable YOLO `.pt` workflow via a standard `.venv`. ONNX, ONNX Runtime and segmentation-specific
+dependencies are not installed by default in this release candidate.
 
 ## Quick start
 
@@ -48,11 +48,13 @@ start.bat
 Alternative manual start:
 
 ```bat
-python bootstrap_env.py
-python start_app.py
+python -m venv .venv
+.venv\Scripts\activate
+pip install -r requirements.txt
+python src\start_app.py
 ```
 
-The app creates or uses local working folders such as `input/`, `models/`, `output/` and `_pkgs/`. These folders are intentionally ignored by Git except for small README placeholder files.
+The app creates or uses local working folders such as `input/`, `models/`, and `output/`. These folders and `.venv` are intentionally ignored by Git except for small README placeholder files.
 
 ## Basic workflow
 
@@ -67,7 +69,7 @@ The app creates or uses local working folders such as `input/`, `models/`, `outp
 
 ## Repository layout
 
-This cleanup keeps the existing working Python files in the repository root for now. That is intentional: the current application works, and moving the code to `src/` should be done as a separate tested refactor.
+The codebase is modularized within the `src/` directory.
 
 ```text
 ComputerVisionCounter_Images/
@@ -79,19 +81,18 @@ ComputerVisionCounter_Images/
 |-- .gitignore
 |-- .gitattributes
 |-- start.bat
-|-- project_paths.py
-|-- aoi_utils.py
-|-- output_utils.py
-|-- bootstrap_env.py
-|-- start_app.py
-|-- app_core.py
-|-- engine_loader.py
-|-- legacy_pt_runner.py
-|-- geo_export.py
-|-- onnx_ultra_patch.py
-|-- ui_advanced.py
-|-- ui_panels.py
-|-- widgets.py
+|-- start.sh
+|-- src/
+|   |-- start_app.py
+|   |-- ui_main.py
+|   |-- app_controller.py
+|   |-- project_paths.py
+|   |-- aoi_utils.py
+|   |-- output_utils.py
+|   |-- runners/
+|   |   |-- base.py
+|   |   |-- factory.py
+|   |   |-- legacy_runner.py
 |-- docs/
 |   |-- QUICKSTART.md
 |   |-- PROJECT_STRUCTURE.md

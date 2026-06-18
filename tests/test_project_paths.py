@@ -25,14 +25,7 @@ class ProjectPathsTest(unittest.TestCase):
         self.assertEqual(paths.OUTPUT_DIR.name, "output")
         self.assertEqual(paths.PRESETS_DIR.name, "presets")
 
-    def test_add_local_package_paths_is_reversible_for_tests(self):
-        original = list(sys.path)
-        try:
-            added = paths.add_local_package_paths(strict=False)
-            for path in added:
-                self.assertIn(str(path), sys.path)
-        finally:
-            sys.path[:] = original
+
 
 
 if __name__ == "__main__":
