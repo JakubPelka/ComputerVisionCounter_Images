@@ -1,7 +1,7 @@
 # ComputerVision Counter Images
 
 **Status:** ACTIVE / pre-release cleanup  
-**Planned release:** v0.1.0 candidate  
+**Planned release:** v0.2.0 candidate  
 **License:** MIT  
 **Primary platform:** Windows 10/11  
 
@@ -98,7 +98,7 @@ ComputerVisionCounter_Images/
 |   |-- PROJECT_STRUCTURE.md
 |   |-- KNOWN_CHALLENGES.md
 |   |-- REPOSITORY_REVIEW.md
-|   |-- RELEASE_NOTES_v0.1.0.md
+|   |-- RELEASE_NOTES_v0.2.0.md
 |   |-- legacy/
 |   `-- planning/
 |-- presets/

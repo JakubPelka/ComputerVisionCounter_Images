@@ -60,7 +60,7 @@ def _read_onnx_metadata(model_path: str) -> dict:
         import onnx  # type: ignore
     except Exception as e:
         raise RuntimeError(
-            "ONNX support is experimental and not included in the v0.1.0 default setup. "
+            "ONNX support is experimental and not included in the v0.2.0 default setup. "
             "Use a YOLO .pt model or install ONNX dependencies manually."
         ) from e
     m = onnx.load(model_path)
@@ -185,7 +185,7 @@ def load_engine(model_path: str, engine: str | None = "auto"):
             import onnx  # noqa: F401
         except Exception as e:
             raise RuntimeError(
-                "ONNX support is experimental and not included in the v0.1.0 default setup. Use a YOLO .pt model or install ONNX dependencies manually."
+                "ONNX support is experimental and not included in the v0.2.0 default setup. Use a YOLO .pt model or install ONNX dependencies manually."
             ) from e
 
         # Ensure metadata (names/stride/task/batch) — auto-patch if needed

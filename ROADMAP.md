@@ -1,6 +1,6 @@
 # Roadmap
 
-## v0.1.0 - cleanup release candidate
+## v0.2.0 - cleanup release candidate
 
 Goal: publish a clean baseline release without changing the working application logic.
 

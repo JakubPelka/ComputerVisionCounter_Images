@@ -1,4 +1,4 @@
-# Release notes - v0.1.0 candidate
+# Release notes - v0.2.0 candidate
 
 This release is intended as the first cleaned baseline release of ComputerVision Counter Images.
 

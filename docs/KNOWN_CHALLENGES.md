@@ -2,7 +2,7 @@
 
 ## 1. Validating the `src/` layout
 
-The application code has already been moved into `src/` as part of the v0.1.0 release candidate. The remaining risk is not the move itself, but validating startup, imports, paths and output behavior after the refactor.
+The application code has already been moved into `src/` as part of the v0.2.0 release candidate. The remaining risk is not the move itself, but validating startup, imports, paths and output behavior after the refactor.
 
 Recommended future approach:
 
@@ -34,7 +34,7 @@ The public repository should not become a backup or distribution dump. Keep rele
 - no model weights unless there is a clear license decision;
 - no `_pkgs/`, outputs or temporary archives in Git.
 
-## 5. Testing before v0.1.0
+## 5. Testing before v0.2.0
 
 Minimum smoke test before release:
 
